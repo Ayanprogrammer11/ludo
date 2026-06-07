@@ -285,12 +285,19 @@ footer { min-height: 100px; display: flex; justify-content: space-between; align
   .hero h1 { font-size: 49px; margin-bottom: 25px; }
   .hero-copy p, .hero-copy a { display: none; }
   .hero-features { gap: 10px; }
-  .game-table { border-radius: 18px; }
+  .game-table {
+    width: calc(100% + 20px);
+    margin-inline: -10px;
+    border-inline: 0;
+    border-radius: 0;
+  }
   .game-topbar { min-height: 65px; padding: 12px; grid-template-columns: 1fr auto; }
   .game-topbar h2 { font-size: 19px; }
   .turn-pill { display: none; }
-  .board-column { padding: 8px 7px 12px; }
-  .ludo-board { border-width: 3px; border-radius: 7px; }
+  .board-column { padding: 0 0 10px; }
+  .board-shell { width: 100%; filter: none; }
+  .ludo-board { border-width: 3px 0; border-radius: 0; }
+  .mobile-controls { width: calc(100% - 20px); }
   .board-cell.is-yard::before { inset: 5%; }
   .token { border-width: 1px; }
   .turn-card { padding: 12px 14px; }
