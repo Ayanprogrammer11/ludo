@@ -35,9 +35,10 @@ export function RoomGame({ code }: { code: string }) {
   useEffect(() => {
     const socket = getRealtimeSocket();
     let disposed = false;
-    const stored = loadRoomIdentity(code);
+    let activeReconnectToken: string | null = null;
 
     const resume = async () => {
+      const stored = loadRoomIdentity(code);
       if (!stored) {
         setConnection("connected");
         setCheckingSession(false);
@@ -49,13 +50,15 @@ export function RoomGame({ code }: { code: string }) {
       });
       if (disposed) return;
       if (!result.ok) {
-        clearRoomIdentity(code);
+        clearRoomIdentity(code, stored.reconnectToken);
         setIdentity(null);
         setConnection("failed");
         setError(result.error.message);
         setCheckingSession(false);
         return;
       }
+      activeReconnectToken = result.identity.reconnectToken;
+      saveRoomIdentity(result.identity);
       setIdentity(result.identity);
       setRoom(result.snapshot);
       setConnection("connected");
@@ -65,7 +68,7 @@ export function RoomGame({ code }: { code: string }) {
     const onDisconnect = () => setConnection("reconnecting");
     const onState = (snapshot: RoomSnapshot) => setRoom(snapshot);
     const onReplaced = () => {
-      clearRoomIdentity(code);
+      if (activeReconnectToken) clearRoomIdentity(code, activeReconnectToken);
       setIdentity(null);
       setConnection("failed");
       setError("This room was opened from another device, so this tab was signed out.");

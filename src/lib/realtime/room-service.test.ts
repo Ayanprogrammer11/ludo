@@ -21,7 +21,24 @@ describe("RoomService", () => {
 
     expect(resumed.snapshot.players).toHaveLength(1);
     expect(resumed.snapshot.players[0].connected).toBe(true);
+    expect(resumed.identity.reconnectToken).not.toBe(host.identity.reconnectToken);
+    expect(() => service.resumeRoom(host.identity.roomCode, host.identity.reconnectToken, "replay-socket")).toThrowError(RoomError);
     expect(() => service.startGame(host.identity.roomCode, host.identity.playerId, "old-socket", crypto.randomUUID())).toThrowError(RoomError);
+  });
+
+  it("does not let one socket bind itself to another player", () => {
+    const service = new RoomService();
+    const host = service.createRoom("Ada", "socket-a");
+    const guest = service.joinRoom(host.identity.roomCode, "Linus", "socket-b");
+
+    expect(() => service.resumeRoom(host.identity.roomCode, guest.identity.reconnectToken, "socket-a")).toThrowError(RoomError);
+  });
+
+  it("bounds the number of active rooms", () => {
+    const service = new RoomService(1);
+    service.createRoom("Ada", "socket-a");
+
+    expect(() => service.createRoom("Linus", "socket-b")).toThrowError(RoomError);
   });
 
   it("makes repeated commands idempotent", () => {

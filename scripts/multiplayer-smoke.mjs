@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import { io } from "socket.io-client";
 
 const url = process.env.LUDO_URL ?? "http://localhost:3000";
+const origin = new URL(url).origin;
 
-function connect() {
+function connect(options = {}) {
   return new Promise((resolve, reject) => {
-    const socket = io(url, { forceNew: true, timeout: 5_000 });
+    const socket = io(url, { forceNew: true, timeout: 5_000, ...options });
     socket.once("connect", () => resolve(socket));
-    socket.once("connect_error", reject);
+    socket.once("connect_error", (error) => {
+      socket.close();
+      reject(error);
+    });
   });
 }
 
@@ -21,8 +25,22 @@ function emit(socket, event, payload) {
   });
 }
 
-const health = await fetch(`${url}/api/health`).then((response) => response.json());
+const healthResponse = await fetch(`${url}/api/health`);
+const health = await healthResponse.json();
 assert.equal(health.ok, true);
+assert.equal(health.uptime, undefined);
+assert.equal(healthResponse.headers.get("x-content-type-options"), "nosniff");
+assert.equal((await fetch(`${url}/api/health`, { method: "POST" })).status, 405);
+
+const homeResponse = await fetch(url);
+assert.match(homeResponse.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
+assert.equal(homeResponse.headers.has("x-powered-by"), false);
+
+await assert.rejects(
+  connect({ extraHeaders: { Origin: "https://attacker.example" } }),
+);
+const browserLikeSocket = await connect({ extraHeaders: { Origin: origin } });
+browserLikeSocket.disconnect();
 
 const host = await connect();
 const guest = await connect();

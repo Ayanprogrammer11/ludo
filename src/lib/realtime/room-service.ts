@@ -9,6 +9,7 @@ const WAITING_DISCONNECT_GRACE_MS = 2 * 60 * 1000;
 const TURN_DURATION_MS = 90 * 1000;
 const ACTIVE_DISCONNECT_GRACE_MS = 30 * 1000;
 const MAX_COMMAND_HISTORY = 500;
+const DEFAULT_MAX_ROOMS = 10_000;
 
 type InternalRoom = RoomSnapshot & {
   reconnectTokens: Map<string, string>;
@@ -33,7 +34,15 @@ export class RoomService {
   private rooms = new Map<string, InternalRoom>();
   private socketIndex = new Map<string, { code: string; playerId: string }>();
 
+  constructor(private maxRooms = DEFAULT_MAX_ROOMS) {}
+
   createRoom(name: string, socketId: string, now = Date.now()): JoinResult {
+    if (this.rooms.size >= this.maxRooms) {
+      this.deleteExpired(now);
+      if (this.rooms.size >= this.maxRooms) {
+        throw new RoomError("SERVER_CAPACITY", "The server is at room capacity. Try again shortly.");
+      }
+    }
     const code = this.createUniqueCode();
     const playerId = randomUUID();
     const reconnectToken = randomUUID();
@@ -95,9 +104,16 @@ export class RoomService {
     const room = this.requireRoom(code);
     const playerId = room.reconnectTokens.get(reconnectToken);
     if (!playerId) throw new RoomError("SESSION_EXPIRED", "That reconnect link is no longer valid.");
+    const existingBinding = this.socketIndex.get(socketId);
+    if (existingBinding && (existingBinding.code !== room.code || existingBinding.playerId !== playerId)) {
+      throw new RoomError("ALREADY_IN_ROOM", "This connection is already bound to another player.");
+    }
     const player = room.players.find((candidate) => candidate.id === playerId)!;
     const displacedSocketId = room.socketIds.get(playerId);
+    const nextReconnectToken = randomUUID();
     player.connected = true;
+    room.reconnectTokens.delete(reconnectToken);
+    room.reconnectTokens.set(nextReconnectToken, playerId);
     room.socketIds.set(playerId, socketId);
     this.socketIndex.set(socketId, { code: room.code, playerId });
     if (displacedSocketId && displacedSocketId !== socketId) this.socketIndex.delete(displacedSocketId);
@@ -106,7 +122,7 @@ export class RoomService {
     if (room.game?.currentPlayerId === playerId) room.turnDeadline = now + TURN_DURATION_MS;
     this.touch(room, now);
     return {
-      identity: { roomCode: room.code, playerId, reconnectToken },
+      identity: { roomCode: room.code, playerId, reconnectToken: nextReconnectToken },
       snapshot: this.snapshot(room),
       displacedSocketId: displacedSocketId === socketId ? undefined : displacedSocketId,
     };

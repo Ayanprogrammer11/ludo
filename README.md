@@ -17,17 +17,25 @@ Open [http://localhost:3000](http://localhost:3000).
 ```bash
 npm test
 npm run lint
-npx tsc --noEmit
+npm run typecheck
+npm run security:audit
+npm run security:signatures
 npm run build
 npm run smoke:multiplayer
 ```
 
 The multiplayer smoke test requires the development server to be running.
 
-## Render Deployment
+## Production Deployment
 
-The included `render.yaml` defines a free Render Web Service with the correct
-build command, start command, Node version, and health check.
+The production service requires Node.js 22, `npm run build`, and `npm start`.
+DigitalOcean App Platform should use `/api/health` as its HTTP health check.
+Set `APP_ORIGINS` to a comma-separated list of exact origins only when a
+cross-origin browser client must connect; otherwise realtime connections are
+restricted to the request host. Configured origins are added to the same-origin
+default.
 
 Active rooms currently live in the single Node server's memory. Rooms survive
-temporary client disconnects, but a deploy or server restart clears them.
+temporary client disconnects, but a deploy or server restart clears them. Keep
+the service at one instance until room state and the Socket.IO adapter are moved
+to shared storage.

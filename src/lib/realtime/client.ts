@@ -45,6 +45,7 @@ export function loadRoomIdentity(code: string): RoomIdentity | null {
   }
 }
 
-export function clearRoomIdentity(code: string) {
+export function clearRoomIdentity(code: string, reconnectToken?: string) {
+  if (reconnectToken && loadRoomIdentity(code)?.reconnectToken !== reconnectToken) return;
   localStorage.removeItem(`ludo:room:${code}`);
 }
