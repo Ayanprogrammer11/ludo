@@ -39,6 +39,15 @@ assert.equal(homeResponse.headers.has("x-powered-by"), false);
 await assert.rejects(
   connect({ extraHeaders: { Origin: "https://attacker.example" } }),
 );
+await assert.rejects(
+  connect({
+    extraHeaders: {
+      Origin: "https://attacker.example",
+      "X-Forwarded-Host": "attacker.example",
+      "X-Forwarded-Proto": "https",
+    },
+  }),
+);
 const browserLikeSocket = await connect({ extraHeaders: { Origin: origin } });
 browserLikeSocket.disconnect();
 

@@ -55,12 +55,11 @@ function isAllowedOrigin(request: IncomingMessage): boolean {
   if (allowedOrigins.has(origin)) return true;
 
   const originUrl = new URL(origin);
-  const host = firstHeader(request.headers["x-forwarded-host"]) ?? firstHeader(request.headers.host);
-  const protocol = firstHeader(request.headers["x-forwarded-proto"]);
+  const host = firstHeader(request.headers.host);
   return Boolean(
     host
     && originUrl.host.toLowerCase() === host.toLowerCase()
-    && (!protocol || originUrl.protocol === `${protocol.toLowerCase()}:`),
+    && originUrl.protocol === (dev ? "http:" : "https:"),
   );
 }
 
