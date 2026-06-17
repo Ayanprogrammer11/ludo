@@ -1,4 +1,5 @@
 import { randomInt, randomUUID } from "node:crypto";
+import type { FinishedRoomMatch } from "../auth/types";
 import { createGameForPlayers, moveToken, rollDie, skipTurn } from "../game/engine";
 import { PLAYER_COLORS } from "../game/types";
 import type { RoomIdentity, RoomPlayer, RoomSnapshot } from "./types";
@@ -11,11 +12,21 @@ const ACTIVE_DISCONNECT_GRACE_MS = 30 * 1000;
 const MAX_COMMAND_HISTORY = 500;
 const DEFAULT_MAX_ROOMS = 10_000;
 
-type InternalRoom = RoomSnapshot & {
+type InternalRoom = Omit<RoomSnapshot, "players"> & {
+  players: InternalRoomPlayer[];
   reconnectTokens: Map<string, string>;
   socketIds: Map<string, string>;
   commandIds: Set<string>;
   disconnectedAt: Map<string, number>;
+};
+
+type InternalRoomPlayer = RoomPlayer & {
+  accountId: string;
+};
+
+export type RoomAccount = {
+  id: string;
+  displayName: string;
 };
 
 export class RoomError extends Error {
@@ -36,7 +47,7 @@ export class RoomService {
 
   constructor(private maxRooms = DEFAULT_MAX_ROOMS) {}
 
-  createRoom(name: string, socketId: string, now = Date.now()): JoinResult {
+  createRoom(account: RoomAccount, socketId: string, now = Date.now()): JoinResult {
     if (this.rooms.size >= this.maxRooms) {
       this.deleteExpired(now);
       if (this.rooms.size >= this.maxRooms) {
@@ -46,9 +57,10 @@ export class RoomService {
     const code = this.createUniqueCode();
     const playerId = randomUUID();
     const reconnectToken = randomUUID();
-    const player: RoomPlayer = {
+    const player: InternalRoomPlayer = {
       id: playerId,
-      name,
+      accountId: account.id,
+      name: account.displayName,
       color: "red",
       connected: true,
       isHost: true,
@@ -74,19 +86,20 @@ export class RoomService {
     return { identity: { roomCode: code, playerId, reconnectToken }, snapshot: this.snapshot(room) };
   }
 
-  joinRoom(code: string, name: string, socketId: string, now = Date.now()): JoinResult {
+  joinRoom(code: string, account: RoomAccount, socketId: string, now = Date.now()): JoinResult {
     const room = this.requireRoom(code);
     if (room.status !== "waiting") throw new RoomError("GAME_STARTED", "This match has already started.");
     if (room.players.length >= 4) throw new RoomError("ROOM_FULL", "This room already has four players.");
-    if (room.players.some((player) => player.name.toLowerCase() === name.toLowerCase())) {
-      throw new RoomError("NAME_TAKEN", "Choose a different name for this room.");
+    if (room.players.some((player) => player.accountId === account.id)) {
+      throw new RoomError("ALREADY_JOINED", "This account already has a seat at the table.");
     }
 
     const playerId = randomUUID();
     const reconnectToken = randomUUID();
     room.players.push({
       id: playerId,
-      name,
+      accountId: account.id,
+      name: account.displayName,
       color: PLAYER_COLORS[room.players.length],
       connected: true,
       isHost: false,
@@ -100,7 +113,7 @@ export class RoomService {
     return { identity: { roomCode: room.code, playerId, reconnectToken }, snapshot: this.snapshot(room) };
   }
 
-  resumeRoom(code: string, reconnectToken: string, socketId: string, now = Date.now()): JoinResult {
+  resumeRoom(code: string, reconnectToken: string, account: RoomAccount, socketId: string, now = Date.now()): JoinResult {
     const room = this.requireRoom(code);
     const playerId = room.reconnectTokens.get(reconnectToken);
     if (!playerId) throw new RoomError("SESSION_EXPIRED", "That reconnect link is no longer valid.");
@@ -109,6 +122,7 @@ export class RoomService {
       throw new RoomError("ALREADY_IN_ROOM", "This connection is already bound to another player.");
     }
     const player = room.players.find((candidate) => candidate.id === playerId)!;
+    if (player.accountId !== account.id) throw new RoomError("ACCOUNT_MISMATCH", "Sign in with the account that joined this room.");
     const displacedSocketId = room.socketIds.get(playerId);
     const nextReconnectToken = randomUUID();
     player.connected = true;
@@ -195,6 +209,24 @@ export class RoomService {
 
   getBinding(socketId: string) {
     return this.socketIndex.get(socketId) ?? null;
+  }
+
+  getFinishedMatch(code: string, finishedAt = Date.now()): FinishedRoomMatch | null {
+    const room = this.rooms.get(code.toUpperCase());
+    if (!room || room.status !== "finished" || !room.game) return null;
+    const winner = room.players.find((player) => player.id === room.game?.winnerId);
+    return {
+      roomCode: room.code,
+      gameId: room.game.id,
+      startedAt: room.createdAt,
+      finishedAt,
+      players: room.players.map((player) => ({
+        userId: player.accountId,
+        name: player.name,
+        color: player.color,
+      })),
+      winnerUserId: winner?.accountId ?? null,
+    };
   }
 
   deleteExpired(now = Date.now()): number {
@@ -298,7 +330,14 @@ export class RoomService {
     return structuredClone({
       code: room.code,
       status: room.status,
-      players: room.players,
+      players: room.players.map((player) => ({
+        id: player.id,
+        name: player.name,
+        color: player.color,
+        connected: player.connected,
+        isHost: player.isHost,
+        joinedAt: player.joinedAt,
+      })),
       hostPlayerId: room.hostPlayerId,
       game: room.game,
       turnDeadline: room.turnDeadline,

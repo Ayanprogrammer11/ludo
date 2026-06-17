@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Copy, LoaderCircle, LogIn, Play, Radio, WifiOff } from "lucide-react";
+import { Check, Copy, LoaderCircle, LogIn, Play, Radio, UserRound, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { legalTokenIds } from "@/lib/game/engine";
 import type { PlayerColor } from "@/lib/game/types";
@@ -22,14 +22,13 @@ const colorClass: Record<PlayerColor, string> = {
   blue: "is-blue",
 };
 
-export function RoomGame({ code }: { code: string }) {
+export function RoomGame({ code, user }: { code: string; user: { displayName: string } }) {
   const [identity, setIdentity] = useState<RoomIdentity | null>(null);
   const [room, setRoom] = useState<RoomSnapshot | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [connection, setConnection] = useState<"connecting" | "connected" | "reconnecting" | "failed">("connecting");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [name, setName] = useState("");
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -92,10 +91,9 @@ export function RoomGame({ code }: { code: string }) {
   }, [code]);
 
   async function join() {
-    if (!name.trim()) return;
     setBusy(true);
     setError("");
-    const result = await emitAck<{ identity: RoomIdentity; snapshot: RoomSnapshot }>("join_room", { code, name });
+    const result = await emitAck<{ identity: RoomIdentity; snapshot: RoomSnapshot }>("join_room", { code });
     setBusy(false);
     if (!result.ok) {
       setError(result.error.message);
@@ -129,8 +127,8 @@ export function RoomGame({ code }: { code: string }) {
       <section className="room-entry">
         <span className="eyebrow">You&apos;ve been invited</span>
         <h1>Join table <em>{code}</em></h1>
-        <p>Choose the name your friends will see during the match.</p>
-        <label><span>Your name</span><input value={name} onChange={(event) => setName(event.target.value)} maxLength={24} autoFocus placeholder="Your name" /></label>
+        <p>You&apos;ll join this room as {user.displayName}.</p>
+        <div className="signed-in-row room-account-row"><span>Signed in</span><strong><UserRound size={15} /> {user.displayName}</strong></div>
         <button className="primary-action" type="button" onClick={() => void join()} disabled={busy || connection === "connecting"}>
           {busy || connection === "connecting" ? <LoaderCircle className="spin" size={18} /> : <LogIn size={18} />} Join the table
         </button>

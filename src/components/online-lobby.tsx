@@ -1,23 +1,24 @@
 "use client";
 
-import { ArrowRight, LoaderCircle, Plus, Users } from "lucide-react";
+import Link from "next/link";
+import { ArrowRight, LoaderCircle, LogIn, Plus, Users } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import type { SafeUser } from "@/lib/auth/types";
 import { emitAck, getRealtimeSocket, saveRoomIdentity } from "@/lib/realtime/client";
 import type { RoomIdentity, RoomSnapshot } from "@/lib/realtime/types";
 
 type JoinAck = { identity: RoomIdentity; snapshot: RoomSnapshot };
 
-export function OnlineLobby() {
+export function OnlineLobby({ user }: { user: SafeUser | null }) {
   const router = useRouter();
-  const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState<"create" | "join" | null>(null);
   const [error, setError] = useState("");
 
   async function submit(kind: "create" | "join") {
-    if (!name.trim()) {
-      setError("Add your name first.");
+    if (!user) {
+      setError("Sign in before starting an online room.");
       return;
     }
     setBusy(kind);
@@ -26,7 +27,7 @@ export function OnlineLobby() {
     if (!socket.connected) socket.connect();
     const result = await emitAck<JoinAck>(
       kind === "create" ? "create_room" : "join_room",
-      kind === "create" ? { name } : { name, code },
+      kind === "create" ? {} : { code },
     );
     setBusy(null);
     if (!result.ok) {
@@ -42,13 +43,20 @@ export function OnlineLobby() {
       <div className="lobby-intro">
         <span className="eyebrow">Play across the miles</span>
         <h2 id="online-title">Start an online table</h2>
-        <p>Private rooms, live turns, and automatic reconnection when someone&apos;s signal drops.</p>
+        <p>Private rooms, live turns, automatic reconnection, and match results tied to your account.</p>
       </div>
       <div className="lobby-actions">
-        <label>
-          <span>Your name</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} maxLength={24} placeholder="What should we call you?" />
-        </label>
+        {user ? (
+          <div className="signed-in-row">
+            <span>Playing as</span>
+            <strong>{user.displayName}</strong>
+          </div>
+        ) : (
+          <div className="signed-in-row">
+            <span>Account required</span>
+            <strong>Save stats and keep rooms abuse-resistant.</strong>
+          </div>
+        )}
         <button className="primary-action" type="button" onClick={() => void submit("create")} disabled={busy !== null}>
           {busy === "create" ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />}
           Create room <ArrowRight size={15} />
@@ -62,6 +70,7 @@ export function OnlineLobby() {
             {busy === "join" ? <LoaderCircle className="spin" size={17} /> : <Users size={17} />} Join
           </button>
         </div>
+        {!user ? <Link className="secondary-action lobby-login" href="/login?next=/%23online"><LogIn size={17} /> Sign in</Link> : null}
         {error ? <p className="form-error" role="alert">{error}</p> : null}
       </div>
     </section>

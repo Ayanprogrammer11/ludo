@@ -1,7 +1,10 @@
 import { ArrowRight, Radio, ShieldCheck, Users } from "lucide-react";
+import { Suspense } from "react";
+import { AuthNav } from "@/components/auth/auth-nav";
 import { LocalGame } from "@/components/game/local-game";
 import { OnlineLobby } from "@/components/online-lobby";
 import { createGame } from "@/lib/game/engine";
+import { getOptionalUser } from "@/lib/auth/dal";
 
 export default function Home() {
   // A deterministic initial match lets Cache Components include the complete table in the PPR shell.
@@ -15,7 +18,9 @@ export default function Home() {
           <span>Ludo<span className="brand-accent">.</span></span>
         </a>
         <div className="nav-status"><Radio size={14} /> Live multiplayer</div>
-        <button className="nav-button" type="button">How to play</button>
+        <Suspense fallback={<div className="nav-status">Account</div>}>
+          <AuthNav />
+        </Suspense>
       </nav>
 
       <div className="page-wrap">
@@ -34,10 +39,17 @@ export default function Home() {
           </div>
         </header>
 
-        <OnlineLobby />
+        <Suspense fallback={<OnlineLobby user={null} />}>
+          <OnlineLobbySlot />
+        </Suspense>
         <div id="play"><LocalGame initialState={initialGame} /></div>
         <footer><span>Built for long-distance friends and crowded sofas.</span><span>v0.1 · Local play preview</span></footer>
       </div>
     </main>
   );
+}
+
+async function OnlineLobbySlot() {
+  const user = await getOptionalUser();
+  return <OnlineLobby user={user} />;
 }

@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { io } from "socket.io-client";
 
 const url = process.env.LUDO_URL ?? "http://localhost:3000";
 const origin = new URL(url).origin;
+const authDataDir = process.env.AUTH_DATA_DIR || path.join(process.cwd(), ".data");
+const authStorePath = path.join(authDataDir, "auth-store.json");
+const sessionCookieName = "ludo_session";
 
 function connect(options = {}) {
   return new Promise((resolve, reject) => {
@@ -13,6 +19,58 @@ function connect(options = {}) {
       reject(error);
     });
   });
+}
+
+async function readAuthStore() {
+  await mkdir(authDataDir, { recursive: true, mode: 0o700 });
+  try {
+    return JSON.parse(await readFile(authStorePath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return { version: 1, users: [], sessions: [], matches: [] };
+    throw error;
+  }
+}
+
+async function writeAuthStore(data) {
+  await mkdir(authDataDir, { recursive: true, mode: 0o700 });
+  const tempPath = path.join(authDataDir, `auth-store.${randomUUID()}.tmp`);
+  await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+  await rename(tempPath, authStorePath);
+}
+
+async function createSmokeSession(displayName) {
+  const now = Date.now();
+  const token = randomBytes(32).toString("base64url");
+  const emailNormalized = `${displayName.toLowerCase()}-${randomUUID()}@smoke.local`;
+  const userId = randomUUID();
+  const data = await readAuthStore();
+  data.users.push({
+    id: userId,
+    email: emailNormalized,
+    emailNormalized,
+    displayName,
+    role: "user",
+    createdAt: now,
+    updatedAt: now,
+    passwordHash: "smoke",
+    passwordSalt: "smoke",
+    passwordUpdatedAt: now,
+    failedLoginCount: 0,
+    lockedUntil: null,
+    lastLoginAt: now,
+  });
+  data.sessions.push({
+    id: randomUUID(),
+    userId,
+    tokenHash: createHash("sha256").update(token).digest("base64url"),
+    createdAt: now,
+    expiresAt: now + 7 * 24 * 60 * 60 * 1000,
+    lastSeenAt: now,
+    userAgentHash: null,
+    revokedAt: null,
+  });
+  await writeAuthStore(data);
+  return `${sessionCookieName}=${token}`;
 }
 
 function emit(socket, event, payload) {
@@ -39,25 +97,29 @@ assert.equal(homeResponse.headers.has("x-powered-by"), false);
 await assert.rejects(
   connect({ extraHeaders: { Origin: "https://attacker.example" } }),
 );
+const hostCookie = await createSmokeSession("Ada");
+const guestCookie = await createSmokeSession("Linus");
 await assert.rejects(
   connect({
     extraHeaders: {
       Origin: "https://attacker.example",
+      Cookie: hostCookie,
       "X-Forwarded-Host": "attacker.example",
       "X-Forwarded-Proto": "https",
     },
   }),
 );
-const browserLikeSocket = await connect({ extraHeaders: { Origin: origin } });
+await assert.rejects(connect({ extraHeaders: { Origin: origin } }));
+const browserLikeSocket = await connect({ extraHeaders: { Origin: origin, Cookie: hostCookie } });
 browserLikeSocket.disconnect();
 
-const host = await connect();
-const guest = await connect();
-const created = await emit(host, "create_room", { name: "Ada" });
+const host = await connect({ extraHeaders: { Cookie: hostCookie } });
+const guest = await connect({ extraHeaders: { Cookie: guestCookie } });
+const created = await emit(host, "create_room", {});
 assert.equal(created.ok, true);
 assert.equal(created.snapshot.players.length, 1);
 
-const joined = await emit(guest, "join_room", { code: created.identity.roomCode, name: "Linus" });
+const joined = await emit(guest, "join_room", { code: created.identity.roomCode });
 assert.equal(joined.ok, true);
 assert.equal(joined.snapshot.players.length, 2);
 
@@ -73,7 +135,7 @@ assert.equal(outOfTurn.ok, false);
 assert.equal(outOfTurn.error.code, "NOT_YOUR_TURN");
 
 guest.disconnect();
-const resumedGuest = await connect();
+const resumedGuest = await connect({ extraHeaders: { Cookie: guestCookie } });
 const resumed = await emit(resumedGuest, "resume_room", {
   code: created.identity.roomCode,
   reconnectToken: joined.identity.reconnectToken,

@@ -1,10 +1,12 @@
 import { Suspense } from "react";
 import Link from "next/link";
+import { AuthNav } from "@/components/auth/auth-nav";
 import { RoomGame } from "@/components/game/room-game";
+import { requireSession } from "@/lib/auth/dal";
 
 export const unstable_instant = {
   prefetch: "runtime",
-  samples: [{ params: { code: "ABC234" } }],
+  samples: [{ params: { code: "ABC234" }, cookies: [{ name: "ludo_session", value: null }] }],
 };
 
 export default function RoomPage({ params }: { params: Promise<{ code: string }> }) {
@@ -16,6 +18,9 @@ export default function RoomPage({ params }: { params: Promise<{ code: string }>
           <span>Ludo<span className="brand-accent">.</span></span>
         </Link>
         <div className="nav-status"><RadioMark /> Live multiplayer</div>
+        <Suspense fallback={<div className="nav-status">Account</div>}>
+          <AuthNav />
+        </Suspense>
       </nav>
       <div className="room-wrap">
         <Suspense fallback={<div className="room-loading"><span className="eyebrow">Private room</span><h1>Opening the table...</h1></div>}>
@@ -28,7 +33,9 @@ export default function RoomPage({ params }: { params: Promise<{ code: string }>
 
 async function ResolvedRoom({ params }: { params: Promise<{ code: string }> }) {
   const { code } = await params;
-  return <RoomGame code={code.toUpperCase()} />;
+  const roomCode = code.toUpperCase();
+  const session = await requireSession(`/room/${roomCode}`);
+  return <RoomGame code={roomCode} user={{ displayName: session.user.displayName }} />;
 }
 
 function RadioMark() {

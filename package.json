@@ -10,7 +10,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "security:audit": "npm audit --audit-level=moderate",
-    "security:signatures": "npm audit signatures",
+    "security:signatures": "npx --yes npm@11.17.0 audit signatures",
     "smoke:multiplayer": "node scripts/multiplayer-smoke.mjs"
   },
   "engines": {

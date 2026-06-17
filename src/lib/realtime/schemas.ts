@@ -6,8 +6,8 @@ export const reconnectTokenSchema = z.string().uuid();
 export const commandIdSchema = z.string().uuid();
 export const tokenIdSchema = z.string().regex(/^(red|green|yellow|blue)-[0-3]$/);
 
-export const createRoomSchema = z.strictObject({ name: displayNameSchema });
-export const joinRoomSchema = z.strictObject({ code: roomCodeSchema, name: displayNameSchema });
+export const createRoomSchema = z.strictObject({});
+export const joinRoomSchema = z.strictObject({ code: roomCodeSchema });
 export const resumeRoomSchema = z.strictObject({ code: roomCodeSchema, reconnectToken: reconnectTokenSchema });
 export const commandSchema = z.strictObject({ commandId: commandIdSchema });
 export const moveSchema = commandSchema.extend({ tokenId: tokenIdSchema });

@@ -2,6 +2,9 @@ import { createServer, type IncomingHttpHeaders, type IncomingMessage } from "no
 import next from "next";
 import { Server, type Socket } from "socket.io";
 import { z } from "zod";
+import { parseSessionCookie } from "./src/lib/auth/cookies";
+import { authStore } from "./src/lib/auth/store";
+import type { SafeUser } from "./src/lib/auth/types";
 import { RateLimiter } from "./src/lib/realtime/rate-limit";
 import { RoomError, RoomService, type JoinResult } from "./src/lib/realtime/room-service";
 import {
@@ -24,8 +27,11 @@ const connectionLimiter = new RateLimiter(40, 60_000, 20_000);
 const createRoomLimiter = new RateLimiter(10, 60_000, 20_000);
 const roomAccessLimiter = new RateLimiter(60, 60_000, 20_000);
 const commandLimiter = new RateLimiter(240, 60_000, 20_000);
+const accountRoomLimiter = new RateLimiter(20, 60_000, 20_000);
+const accountCommandLimiter = new RateLimiter(300, 60_000, 20_000);
 const socketEventLimiter = new RateLimiter(120, 10_000, 20_000);
 const MAX_CONNECTIONS = 2_000;
+const recordedFinishedMatches = new Set<string>();
 
 function firstHeader(value: string | string[] | undefined): string | undefined {
   return (Array.isArray(value) ? value[0] : value)?.split(",")[0]?.trim();
@@ -104,6 +110,7 @@ const io = new Server(httpServer, {
 
 type PlayerSocket = Socket & {
   data: {
+    account?: SafeUser;
     roomCode?: string;
     playerId?: string;
   };
@@ -136,9 +143,19 @@ function requireIdentity(socket: PlayerSocket): RoomIdentity {
   };
 }
 
+function requireAccount(socket: PlayerSocket): SafeUser {
+  if (!socket.data.account) throw new RoomError("AUTH_REQUIRED", "Sign in before playing online.");
+  return socket.data.account;
+}
+
 function enforceRateLimit(socket: PlayerSocket, limiter: RateLimiter) {
   const address = clientKey(socket.handshake.headers, socket.handshake.address);
-  if (!socketEventLimiter.consume(socket.id) || !limiter.consume(address)) {
+  const accountId = socket.data.account?.id;
+  if (
+    !socketEventLimiter.consume(socket.id)
+    || !limiter.consume(address)
+    || (accountId && !accountCommandLimiter.consume(accountId))
+  ) {
     throw new RoomError("RATE_LIMITED", "Too many requests. Wait a moment and try again.");
   }
 }
@@ -159,13 +176,43 @@ function emitSnapshot(snapshot: RoomSnapshot) {
   io.to(snapshot.code).emit("room_state", snapshot);
 }
 
-io.use((socket, next) => {
+async function recordFinishedMatch(snapshot: RoomSnapshot) {
+  if (snapshot.status !== "finished" || !snapshot.game) return;
+  const match = rooms.getFinishedMatch(snapshot.code);
+  if (!match) return;
+  const key = `${match.roomCode}:${match.gameId}:${match.startedAt}`;
+  if (recordedFinishedMatches.has(key)) return;
+  recordedFinishedMatches.add(key);
+  try {
+    await authStore.recordMatch(match);
+  } catch (error) {
+    recordedFinishedMatches.delete(key);
+    console.error("Failed to record match result", error);
+  }
+}
+
+io.use(async (socket, next) => {
   if (io.engine.clientsCount > MAX_CONNECTIONS) {
     next(new Error("The server is at connection capacity."));
     return;
   }
   const address = clientKey(socket.handshake.headers, socket.handshake.address);
-  next(connectionLimiter.consume(address) ? undefined : new Error("Too many connection attempts."));
+  if (!connectionLimiter.consume(address)) {
+    next(new Error("Too many connection attempts."));
+    return;
+  }
+  try {
+    const session = await authStore.validateSessionToken(parseSessionCookie(socket.handshake.headers.cookie));
+    if (!session) {
+      next(new Error("Sign in before playing online."));
+      return;
+    }
+    (socket as PlayerSocket).data.account = session.user;
+    next();
+  } catch (error) {
+    console.error("Failed to verify realtime session", error);
+    next(new Error("Could not verify your account session."));
+  }
 });
 
 io.on("connection", (rawSocket) => {
@@ -174,9 +221,11 @@ io.on("connection", (rawSocket) => {
   socket.on("create_room", (raw, ack: (result: Ack<{ identity: RoomIdentity; snapshot: RoomSnapshot }>) => void) => {
     guard(ack, () => {
       enforceRateLimit(socket, createRoomLimiter);
+      const account = requireAccount(socket);
+      if (!accountRoomLimiter.consume(account.id)) throw new RoomError("RATE_LIMITED", "Too many rooms. Wait a moment and try again.");
       if (rooms.getBinding(socket.id)) throw new RoomError("ALREADY_IN_ROOM", "This connection is already in a room.");
-      const { name } = createRoomSchema.parse(raw);
-      const result = rooms.createRoom(name, socket.id);
+      createRoomSchema.parse(raw);
+      const result = rooms.createRoom(account, socket.id);
       void attach(socket, result);
       return { identity: result.identity, snapshot: result.snapshot };
     });
@@ -185,9 +234,10 @@ io.on("connection", (rawSocket) => {
   socket.on("join_room", (raw, ack: (result: Ack<{ identity: RoomIdentity; snapshot: RoomSnapshot }>) => void) => {
     guard(ack, () => {
       enforceRateLimit(socket, roomAccessLimiter);
+      const account = requireAccount(socket);
       if (rooms.getBinding(socket.id)) throw new RoomError("ALREADY_IN_ROOM", "This connection is already in a room.");
-      const { code, name } = joinRoomSchema.parse(raw);
-      const result = rooms.joinRoom(code, name, socket.id);
+      const { code } = joinRoomSchema.parse(raw);
+      const result = rooms.joinRoom(code, account, socket.id);
       void attach(socket, result);
       return { identity: result.identity, snapshot: result.snapshot };
     });
@@ -196,8 +246,9 @@ io.on("connection", (rawSocket) => {
   socket.on("resume_room", (raw, ack: (result: Ack<{ identity: RoomIdentity; snapshot: RoomSnapshot }>) => void) => {
     guard(ack, () => {
       enforceRateLimit(socket, roomAccessLimiter);
+      const account = requireAccount(socket);
       const { code, reconnectToken } = resumeRoomSchema.parse(raw);
-      const result = rooms.resumeRoom(code, reconnectToken, socket.id);
+      const result = rooms.resumeRoom(code, reconnectToken, account, socket.id);
       void attach(socket, result);
       return { identity: result.identity, snapshot: result.snapshot };
     });
@@ -221,6 +272,7 @@ io.on("connection", (rawSocket) => {
       const identity = requireIdentity(socket);
       const snapshot = rooms.roll(identity.roomCode, identity.playerId, socket.id, commandId);
       emitSnapshot(snapshot);
+      void recordFinishedMatch(snapshot);
       return undefined;
     });
   });
@@ -232,6 +284,7 @@ io.on("connection", (rawSocket) => {
       const identity = requireIdentity(socket);
       const snapshot = rooms.move(identity.roomCode, identity.playerId, socket.id, commandId, tokenId);
       emitSnapshot(snapshot);
+      void recordFinishedMatch(snapshot);
       return undefined;
     });
   });
