@@ -31,6 +31,18 @@ describe("RoomService", () => {
     expect(() => service.startGame(host.identity.roomCode, host.identity.playerId, "old-socket", crypto.randomUUID())).toThrowError(RoomError);
   });
 
+  it("keeps same-socket resume idempotent for development remounts", () => {
+    const service = new RoomService();
+    const host = service.createRoom(account("Ada"), "socket-a");
+    const first = service.resumeRoom(host.identity.roomCode, host.identity.reconnectToken, account("Ada"), "socket-a");
+    const second = service.resumeRoom(host.identity.roomCode, host.identity.reconnectToken, account("Ada"), "socket-a");
+
+    expect(first.identity.reconnectToken).toBe(host.identity.reconnectToken);
+    expect(second.identity.reconnectToken).toBe(host.identity.reconnectToken);
+    expect(second.snapshot.players).toHaveLength(1);
+    expect(second.snapshot.players[0].connected).toBe(true);
+  });
+
   it("does not let a different account replay a reconnect token", () => {
     const service = new RoomService();
     const host = service.createRoom(account("Ada"), "old-socket");
@@ -98,5 +110,50 @@ describe("RoomService", () => {
 
     expect(snapshot.game?.currentPlayerId).toBe(guest.identity.playerId);
     expect(snapshot.game?.events[0].message).toContain("timed out");
+  });
+
+  it("removes a waiting player who explicitly leaves", () => {
+    const service = new RoomService();
+    const host = service.createRoom(account("Ada"), "socket-a", 1);
+    const guest = service.joinRoom(host.identity.roomCode, account("Linus"), "socket-b", 2);
+
+    const snapshot = service.leaveRoom(host.identity.roomCode, guest.identity.playerId, "socket-b", crypto.randomUUID(), 3);
+
+    expect(snapshot?.players.map((player) => player.id)).toEqual([host.identity.playerId]);
+    expect(() => service.resumeRoom(host.identity.roomCode, guest.identity.reconnectToken, account("Linus"), "socket-c", 4)).toThrowError(RoomError);
+  });
+
+  it("forfeits a player who leaves a running match and records replay frames", () => {
+    const service = new RoomService();
+    const host = service.createRoom(account("Ada"), "socket-a", 1);
+    const guest = service.joinRoom(host.identity.roomCode, account("Linus"), "socket-b", 2);
+    service.startGame(host.identity.roomCode, host.identity.playerId, "socket-a", crypto.randomUUID(), 3);
+
+    const snapshot = service.leaveRoom(host.identity.roomCode, guest.identity.playerId, "socket-b", crypto.randomUUID(), 4);
+    const match = service.getFinishedMatch(host.identity.roomCode, 5);
+
+    expect(snapshot?.status).toBe("finished");
+    expect(snapshot?.game?.winnerId).toBe(host.identity.playerId);
+    expect(snapshot?.game?.currentPlayerId).toBe(host.identity.playerId);
+    expect(match?.winnerUserId).toBe("account-ada");
+    expect(match?.replay.frames.length).toBeGreaterThanOrEqual(2);
+    expect(match?.replay.frames.at(-1)?.label).toContain("wins by forfeit");
+  });
+
+  it("automatically forfeits a player after repeated missed turns", () => {
+    const service = new RoomService();
+    const host = service.createRoom(account("Ada"), "socket-a", 1);
+    service.joinRoom(host.identity.roomCode, account("Linus"), "socket-b", 2);
+    service.startGame(host.identity.roomCode, host.identity.playerId, "socket-a", crypto.randomUUID(), 3);
+
+    service.maintainRooms(90_004);
+    service.maintainRooms(180_005);
+    service.maintainRooms(270_006);
+    service.maintainRooms(360_007);
+    const [snapshot] = service.maintainRooms(450_008);
+
+    expect(snapshot.status).toBe("finished");
+    expect(snapshot.game?.events[0].message).toContain("wins by forfeit");
+    expect(snapshot.game?.players.find((player) => player.id === host.identity.playerId)?.forfeited).toBe(true);
   });
 });

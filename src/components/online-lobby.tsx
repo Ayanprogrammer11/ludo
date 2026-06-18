@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { ArrowRight, LoaderCircle, LogIn, Plus, Users } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useTransition } from "react";
+import { LinkPendingIndicator } from "@/components/loading/link-pending-indicator";
 import type { SafeUser } from "@/lib/auth/types";
 import { emitAck, getRealtimeSocket, saveRoomIdentity } from "@/lib/realtime/client";
 import type { RoomIdentity, RoomSnapshot } from "@/lib/realtime/types";
@@ -14,7 +15,10 @@ export function OnlineLobby({ user }: { user: SafeUser | null }) {
   const router = useRouter();
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState<"create" | "join" | null>(null);
+  const [navigating, setNavigating] = useState<"create" | "join" | null>(null);
+  const [, startTransition] = useTransition();
   const [error, setError] = useState("");
+  const pending = busy ?? navigating;
 
   async function submit(kind: "create" | "join") {
     if (!user) {
@@ -29,13 +33,15 @@ export function OnlineLobby({ user }: { user: SafeUser | null }) {
       kind === "create" ? "create_room" : "join_room",
       kind === "create" ? {} : { code },
     );
-    setBusy(null);
     if (!result.ok) {
+      setBusy(null);
       setError(result.error.message);
       return;
     }
     saveRoomIdentity(result.identity);
-    router.push(`/room/${result.identity.roomCode}`);
+    setBusy(null);
+    setNavigating(kind);
+    startTransition(() => router.push(`/room/${result.identity.roomCode}`));
   }
 
   return (
@@ -45,7 +51,7 @@ export function OnlineLobby({ user }: { user: SafeUser | null }) {
         <h2 id="online-title">Start an online table</h2>
         <p>Private rooms, live turns, automatic reconnection, and match results tied to your account.</p>
       </div>
-      <div className="lobby-actions">
+      <div className="lobby-actions" aria-busy={Boolean(pending)}>
         {user ? (
           <div className="signed-in-row">
             <span>Playing as</span>
@@ -57,20 +63,20 @@ export function OnlineLobby({ user }: { user: SafeUser | null }) {
             <strong>Save stats and keep rooms abuse-resistant.</strong>
           </div>
         )}
-        <button className="primary-action" type="button" onClick={() => void submit("create")} disabled={busy !== null}>
-          {busy === "create" ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />}
-          Create room <ArrowRight size={15} />
+        <button className="primary-action" type="button" onClick={() => void submit("create")} disabled={pending !== null}>
+          {pending === "create" ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />}
+          {pending === "create" ? "Creating room..." : "Create room"} <ArrowRight size={15} />
         </button>
         <div className="join-row">
           <label>
             <span>Invite code</span>
             <input value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} maxLength={6} placeholder="ABC234" />
           </label>
-          <button className="secondary-action" type="button" onClick={() => void submit("join")} disabled={busy !== null || code.length !== 6}>
-            {busy === "join" ? <LoaderCircle className="spin" size={17} /> : <Users size={17} />} Join
+          <button className="secondary-action" type="button" onClick={() => void submit("join")} disabled={pending !== null || code.length !== 6}>
+            {pending === "join" ? <LoaderCircle className="spin" size={17} /> : <Users size={17} />} {pending === "join" ? "Joining..." : "Join"}
           </button>
         </div>
-        {!user ? <Link className="secondary-action lobby-login" href="/login?next=/%23online"><LogIn size={17} /> Sign in</Link> : null}
+        {!user ? <Link className="secondary-action lobby-login" href="/login?next=/%23online"><LogIn size={17} /> Sign in <LinkPendingIndicator /></Link> : null}
         {error ? <p className="form-error" role="alert">{error}</p> : null}
       </div>
     </section>

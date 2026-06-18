@@ -71,6 +71,7 @@ function matchOutcome(match: StoredMatch, userId: string): RecentMatch {
     outcome: match.winnerUserId === userId ? "won" : "lost",
     winnerName: winner?.name ?? null,
     players: match.players,
+    hasReplay: Boolean(match.replay?.frames.length),
   };
 }
 
@@ -214,6 +215,7 @@ export class AuthStore {
         finishedAt: match.finishedAt,
         players: match.players,
         winnerUserId: match.winnerUserId,
+        replay: match.replay,
       });
       if (data.matches.length > MAX_MATCHES) data.matches = data.matches.slice(-MAX_MATCHES);
       await this.write(data);
@@ -242,6 +244,15 @@ export class AuthStore {
         },
         recentMatches: matches.slice(0, 8).map((match) => matchOutcome(match, userId)),
       };
+    });
+  }
+
+  async getMatchForUser(userId: string, matchId: string): Promise<StoredMatch | null> {
+    return this.enqueue(async () => {
+      const data = await this.read();
+      const match = data.matches.find((candidate) => candidate.id === matchId);
+      if (!match?.players.some((player) => player.userId === userId)) return null;
+      return structuredClone(match);
     });
   }
 

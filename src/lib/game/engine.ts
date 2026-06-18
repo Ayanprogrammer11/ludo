@@ -30,12 +30,19 @@ function event(
 function activePlayer(state: GameState): Player {
   const player = state.players.find((candidate) => candidate.id === state.currentPlayerId);
   if (!player) throw new Error("The active player does not exist.");
+  if (player.forfeited) throw new Error("A forfeited player cannot take a turn.");
   return player;
 }
 
 function nextPlayerId(state: GameState): string {
   const currentIndex = state.players.findIndex((player) => player.id === state.currentPlayerId);
-  return state.players[(currentIndex + 1) % state.players.length].id;
+  const eligiblePlayers = state.players.filter((player) => !player.forfeited);
+  if (eligiblePlayers.length === 0) throw new Error("No active players remain.");
+  for (let offset = 1; offset <= state.players.length; offset += 1) {
+    const candidate = state.players[(currentIndex + offset + state.players.length) % state.players.length];
+    if (!candidate.forfeited) return candidate.id;
+  }
+  return eligiblePlayers[0].id;
 }
 
 function endTurn(state: GameState, message?: string): GameState {
@@ -125,6 +132,7 @@ export function createGameForPlayers(
     name: player.name.trim() || `Player ${index + 1}`,
     color: PLAYER_COLORS[index],
     connected: player.connected ?? true,
+    forfeited: false,
   }));
   const tokens = players.flatMap((player) =>
     Array.from({ length: 4 }, (_, index) => ({
@@ -198,6 +206,46 @@ export function skipTurn(state: GameState, reason?: string): GameState {
   }
   const player = activePlayer(state);
   return endTurn(state, reason ?? `${player.name} skipped the turn`);
+}
+
+export function forfeitPlayer(state: GameState, playerId: string, reason?: string): GameState {
+  if (state.phase === "finished" || state.winnerId) {
+    throw new Error("A finished game cannot forfeit a player.");
+  }
+  const player = state.players.find((candidate) => candidate.id === playerId);
+  if (!player) throw new Error("That player is not in this game.");
+  if (player.forfeited) return state;
+
+  const players = state.players.map((candidate) =>
+    candidate.id === playerId ? { ...candidate, connected: false, forfeited: true } : candidate,
+  );
+  const remaining = players.filter((candidate) => !candidate.forfeited);
+  const message = reason ?? `${player.name} forfeited the match`;
+  const withEvent = event({ ...state, players }, message, player.color, "turn");
+
+  if (remaining.length === 1) {
+    const winner = remaining[0];
+    return {
+      ...state,
+      players,
+      currentPlayerId: winner.id,
+      phase: "finished",
+      dieValue: null,
+      winnerId: winner.id,
+      events: event({ ...state, players, events: withEvent }, `${winner.name} wins by forfeit`, winner.color, "finish"),
+    };
+  }
+
+  return {
+    ...state,
+    players,
+    currentPlayerId: state.currentPlayerId === playerId ? nextPlayerId({ ...state, players }) : state.currentPlayerId,
+    phase: "awaiting_roll",
+    dieValue: null,
+    consecutiveSixes: 0,
+    turnNumber: state.currentPlayerId === playerId ? state.turnNumber + 1 : state.turnNumber,
+    events: withEvent,
+  };
 }
 
 export function moveToken(state: GameState, tokenId: string): MoveResult {

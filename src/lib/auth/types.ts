@@ -1,4 +1,4 @@
-import type { PlayerColor } from "../game/types";
+import type { GameState, PlayerColor } from "../game/types";
 
 export type UserRole = "user" | "admin";
 
@@ -46,6 +46,7 @@ export type StoredMatch = {
   finishedAt: number;
   players: StoredMatchPlayer[];
   winnerUserId: string | null;
+  replay?: MatchReplay | null;
 };
 
 export type AuthData = {
@@ -75,6 +76,7 @@ export type RecentMatch = {
   outcome: "won" | "lost";
   winnerName: string | null;
   players: StoredMatchPlayer[];
+  hasReplay: boolean;
 };
 
 export type AccountDashboard = {
@@ -90,4 +92,19 @@ export type FinishedRoomMatch = {
   finishedAt: number;
   players: StoredMatchPlayer[];
   winnerUserId: string | null;
+  replay: MatchReplay;
+};
+
+export type MatchReplayFrame = {
+  at: number;
+  label: string;
+  turnDeadline: number | null;
+  state: GameState;
+};
+
+export type MatchReplay = {
+  turnDurationMs: number;
+  activeDisconnectGraceMs: number;
+  waitingDisconnectGraceMs: number;
+  frames: MatchReplayFrame[];
 };

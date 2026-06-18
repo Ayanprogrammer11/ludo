@@ -57,6 +57,12 @@ describe("AuthStore", () => {
         { userId: ada.id, name: "Ada", color: "red" as const },
         { userId: linus.id, name: "Linus", color: "green" as const },
       ],
+      replay: {
+        turnDurationMs: 90_000,
+        activeDisconnectGraceMs: 30_000,
+        waitingDisconnectGraceMs: 120_000,
+        frames: [],
+      },
     };
 
     await expect(store.recordMatch(match)).resolves.toBe(true);
@@ -67,5 +73,6 @@ describe("AuthStore", () => {
     expect(adaDashboard?.stats).toEqual({ matchesPlayed: 1, wins: 1, losses: 0, winRate: 100 });
     expect(linusDashboard?.stats).toEqual({ matchesPlayed: 1, wins: 0, losses: 1, winRate: 0 });
     expect(adaDashboard?.recentMatches[0].winnerName).toBe("Ada");
+    expect(adaDashboard?.recentMatches[0].hasReplay).toBe(false);
   });
 });

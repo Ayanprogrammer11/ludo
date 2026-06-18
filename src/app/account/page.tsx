@@ -4,6 +4,8 @@ import Link from "next/link";
 import { History, ShieldCheck, Trophy, UserRound } from "lucide-react";
 import { AuthNav } from "@/components/auth/auth-nav";
 import { ProfileForm } from "@/components/auth/profile-form";
+import { LinkPendingIndicator } from "@/components/loading/link-pending-indicator";
+import { RouteLoading } from "@/components/loading/route-loading";
 import { getAccountDashboard } from "@/lib/auth/dal";
 
 export default function AccountPage() {
@@ -19,7 +21,7 @@ export default function AccountPage() {
         </Suspense>
       </nav>
       <div className="account-page">
-        <Suspense fallback={<section className="account-loading"><span className="eyebrow">Account</span><h1>Loading your table...</h1></section>}>
+        <Suspense fallback={<RouteLoading eyebrow="Account" title="Loading your table..." detail="Fetching your profile, stats, and match history." />}>
           <AccountContent />
         </Suspense>
       </div>
@@ -65,15 +67,22 @@ async function AccountContent() {
             <p>{recentMatches.length ? "Your latest online match results." : "Online results will appear here after finished matches."}</p>
           </div>
           <div className="match-list">
-            {recentMatches.length ? recentMatches.map((match) => (
-              <article className="match-row" key={match.id}>
-                <div>
-                  <strong>{match.outcome === "won" ? "Won" : "Lost"} · Room {match.roomCode}</strong>
-                  <small>{new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(match.playedAt)}</small>
-                </div>
-                <span>{match.winnerName ? `${match.winnerName} won` : "No winner"}</span>
-              </article>
-            )) : <div className="empty-history">Finish an online match to start building your record.</div>}
+            {recentMatches.length ? recentMatches.map((match) => {
+              const content = (
+                <>
+                  <div>
+                    <strong>{match.outcome === "won" ? "Won" : "Lost"} · Room {match.roomCode}</strong>
+                    <small>{new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(match.playedAt)}</small>
+                  </div>
+                  <span>{match.hasReplay ? "Replay" : match.winnerName ? `${match.winnerName} won` : "No replay"}</span>
+                </>
+              );
+              return match.hasReplay ? (
+                <Link className="match-row" href={`/account/games/${encodeURIComponent(match.id)}`} key={match.id}>{content}<LinkPendingIndicator /></Link>
+              ) : (
+                <article className="match-row is-disabled" key={match.id}>{content}</article>
+              );
+            }) : <div className="empty-history">Finish an online match to start building your record.</div>}
           </div>
         </section>
       </div>

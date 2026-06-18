@@ -9,6 +9,7 @@ export type Player = {
   name: string;
   color: PlayerColor;
   connected: boolean;
+  forfeited: boolean;
 };
 
 export type Token = {

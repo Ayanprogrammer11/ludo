@@ -3,6 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { AuthForm } from "@/components/auth/auth-form";
 import { AuthNav } from "@/components/auth/auth-nav";
+import { LinkPendingIndicator } from "@/components/loading/link-pending-indicator";
 import { getOptionalUser } from "@/lib/auth/dal";
 import { safeNextPath } from "@/lib/auth/validation";
 
@@ -44,7 +45,7 @@ function AuthShell({ mode, nextPath }: { mode: "signup"; nextPath: string }) {
         <p>Your account name is what friends see in online rooms and match history.</p>
       </div>
       <AuthForm mode={mode} nextPath={nextPath} />
-      <p className="auth-switch">Already have an account? <Link href={`/login?next=${encodeURIComponent(nextPath)}`}>Sign in</Link></p>
+      <p className="auth-switch">Already have an account? <Link href={`/login?next=${encodeURIComponent(nextPath)}`}>Sign in <LinkPendingIndicator /></Link></p>
     </section>
   );
 }

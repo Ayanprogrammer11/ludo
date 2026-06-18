@@ -1,8 +1,8 @@
 "use client";
 
 import { RotateCcw, Sparkles, Trophy } from "lucide-react";
-import { useMemo, useState, useTransition } from "react";
-import { legalTokenIds, moveToken, rollDie } from "@/lib/game/engine";
+import { useEffect, useMemo, useState, useTransition } from "react";
+import { legalTokenIds, moveToken, rollDie, skipTurn } from "@/lib/game/engine";
 import type { GameState, PlayerColor } from "@/lib/game/types";
 import { Die } from "./die";
 import { GameBoard } from "./game-board";
@@ -13,17 +13,62 @@ const colorClass: Record<PlayerColor, string> = {
   yellow: "is-yellow",
   blue: "is-blue",
 };
+const TURN_DURATION_MS = 90_000;
+
+function formatTimer(ms: number) {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60).toString();
+  const seconds = (totalSeconds % 60).toString().padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
 
 export function LocalGame({ initialState }: { initialState: GameState }) {
-  const [state, setState] = useState(initialState);
+  const [timedState, setTimedState] = useState(() => ({
+    game: initialState,
+    turnDeadline: TURN_DURATION_MS,
+  }));
+  const [now, setNow] = useState(0);
   const [isRolling, startRolling] = useTransition();
+  const state = timedState.game;
+  const turnDeadline = timedState.turnDeadline;
   const legalIds = useMemo(() => legalTokenIds(state), [state]);
   const currentPlayer = state.players.find((player) => player.id === state.currentPlayerId)!;
   const winner = state.players.find((player) => player.id === state.winnerId);
+  const remainingMs = winner ? 0 : turnDeadline - now;
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(performance.now()), 250);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (winner) return undefined;
+    const timeout = window.setTimeout(() => {
+      setTimedState((current) => {
+        if (current.game.phase === "finished" || current.game.winnerId) return current;
+        const active = current.game.players.find((player) => player.id === current.game.currentPlayerId)!;
+        return {
+          game: skipTurn(current.game, `${active.name}'s turn timed out`),
+          turnDeadline: performance.now() + TURN_DURATION_MS,
+        };
+      });
+    }, Math.max(0, turnDeadline - performance.now()));
+    return () => window.clearTimeout(timeout);
+  }, [turnDeadline, winner]);
 
   function handleRoll() {
     if (state.phase !== "awaiting_roll") return;
-    startRolling(() => setState((current) => rollDie(current)));
+    startRolling(() => setTimedState((current) => ({
+      game: rollDie(current.game),
+      turnDeadline: performance.now() + TURN_DURATION_MS,
+    })));
+  }
+
+  function restart() {
+    setTimedState({
+      game: initialState,
+      turnDeadline: performance.now() + TURN_DURATION_MS,
+    });
   }
 
   return (
@@ -34,16 +79,24 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
           <span className={`player-dot ${colorClass[currentPlayer.color]}`} />
           <span><small>Turn {state.turnNumber}</small>{currentPlayer.name}</span>
         </div>
-        <button type="button" className="icon-button" onClick={() => setState(initialState)} aria-label="Restart match"><RotateCcw size={18} /></button>
+        <button type="button" className="icon-button" onClick={restart} aria-label="Restart match"><RotateCcw size={18} /></button>
       </div>
 
       <div className="game-layout">
         <div className="board-column">
-          <GameBoard state={state} legalIds={legalIds} onMove={(id) => setState((current) => moveToken(current, id).state)} />
-          <div className="mobile-controls"><TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} onRoll={handleRoll} /></div>
+          <GameBoard
+            state={state}
+            legalIds={legalIds}
+            activeColor={currentPlayer.color}
+            onMove={(id) => setTimedState((current) => ({
+              game: moveToken(current.game, id).state,
+              turnDeadline: performance.now() + TURN_DURATION_MS,
+            }))}
+          />
+          <div className="mobile-controls"><TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} remainingMs={remainingMs} onRoll={handleRoll} /></div>
         </div>
         <aside className="game-panel">
-          <TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} onRoll={handleRoll} />
+          <TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} remainingMs={remainingMs} onRoll={handleRoll} />
           <div className="players-list">
             <div className="panel-heading"><span>Players</span><small>{state.players.length}/4</small></div>
             {state.players.map((player) => {
@@ -69,11 +122,12 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
   );
 }
 
-function TurnControls({ state, currentPlayer, winner, isRolling, onRoll }: {
+function TurnControls({ state, currentPlayer, winner, isRolling, remainingMs, onRoll }: {
   state: GameState;
   currentPlayer: GameState["players"][number];
   winner: GameState["players"][number] | undefined;
   isRolling: boolean;
+  remainingMs: number;
   onRoll: () => void;
 }) {
   if (winner) {
@@ -82,6 +136,7 @@ function TurnControls({ state, currentPlayer, winner, isRolling, onRoll }: {
   return (
     <div className={`turn-card ${colorClass[currentPlayer.color]}`}>
       <div className="turn-copy"><span>{currentPlayer.name}&apos;s move</span><strong>{state.phase === "awaiting_roll" ? "Roll the die" : "Choose a glowing token"}</strong></div>
+      <div className="turn-timer" aria-label={`Turn timer ${formatTimer(remainingMs)} remaining`}><span>{formatTimer(remainingMs)}</span><small>left</small></div>
       <button type="button" className="roll-button" onClick={onRoll} disabled={state.phase !== "awaiting_roll" || isRolling}>
         <Die value={state.lastRoll ?? 6} rolling={isRolling} />
         <span>{state.phase === "awaiting_roll" ? "Roll" : `Rolled ${state.dieValue}`}</span>

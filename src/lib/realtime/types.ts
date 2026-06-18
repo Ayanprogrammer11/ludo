@@ -7,6 +7,8 @@ export type RoomPlayer = {
   name: string;
   color: PlayerColor;
   connected: boolean;
+  leftAt: number | null;
+  missedTurns: number;
   isHost: boolean;
   joinedAt: number;
 };

@@ -1,6 +1,6 @@
 import { randomInt, randomUUID } from "node:crypto";
-import type { FinishedRoomMatch } from "../auth/types";
-import { createGameForPlayers, moveToken, rollDie, skipTurn } from "../game/engine";
+import type { FinishedRoomMatch, MatchReplayFrame } from "../auth/types";
+import { createGameForPlayers, forfeitPlayer, moveToken, rollDie, skipTurn } from "../game/engine";
 import { PLAYER_COLORS } from "../game/types";
 import type { RoomIdentity, RoomPlayer, RoomSnapshot } from "./types";
 
@@ -9,7 +9,9 @@ const ROOM_TTL_MS = 6 * 60 * 60 * 1000;
 const WAITING_DISCONNECT_GRACE_MS = 2 * 60 * 1000;
 const TURN_DURATION_MS = 90 * 1000;
 const ACTIVE_DISCONNECT_GRACE_MS = 30 * 1000;
+const MAX_MISSED_TURNS = 3;
 const MAX_COMMAND_HISTORY = 500;
+const MAX_REPLAY_FRAMES = 2_000;
 const DEFAULT_MAX_ROOMS = 10_000;
 
 type InternalRoom = Omit<RoomSnapshot, "players"> & {
@@ -18,6 +20,7 @@ type InternalRoom = Omit<RoomSnapshot, "players"> & {
   socketIds: Map<string, string>;
   commandIds: Set<string>;
   disconnectedAt: Map<string, number>;
+  replayFrames: MatchReplayFrame[];
 };
 
 type InternalRoomPlayer = RoomPlayer & {
@@ -63,6 +66,8 @@ export class RoomService {
       name: account.displayName,
       color: "red",
       connected: true,
+      leftAt: null,
+      missedTurns: 0,
       isHost: true,
       joinedAt: now,
     };
@@ -80,6 +85,7 @@ export class RoomService {
       socketIds: new Map([[playerId, socketId]]),
       commandIds: new Set(),
       disconnectedAt: new Map(),
+      replayFrames: [],
     };
     this.rooms.set(code, room);
     this.socketIndex.set(socketId, { code, playerId });
@@ -102,6 +108,8 @@ export class RoomService {
       name: account.displayName,
       color: PLAYER_COLORS[room.players.length],
       connected: true,
+      leftAt: null,
+      missedTurns: 0,
       isHost: false,
       joinedAt: now,
     });
@@ -123,11 +131,16 @@ export class RoomService {
     }
     const player = room.players.find((candidate) => candidate.id === playerId)!;
     if (player.accountId !== account.id) throw new RoomError("ACCOUNT_MISMATCH", "Sign in with the account that joined this room.");
+    if (player.leftAt) throw new RoomError("SEAT_CLOSED", "That seat has already left this room.");
     const displacedSocketId = room.socketIds.get(playerId);
-    const nextReconnectToken = randomUUID();
+    const sameSocketResume = displacedSocketId === socketId;
+    const nextReconnectToken = sameSocketResume ? reconnectToken : randomUUID();
     player.connected = true;
-    room.reconnectTokens.delete(reconnectToken);
-    room.reconnectTokens.set(nextReconnectToken, playerId);
+    player.missedTurns = 0;
+    if (!sameSocketResume) {
+      room.reconnectTokens.delete(reconnectToken);
+      room.reconnectTokens.set(nextReconnectToken, playerId);
+    }
     room.socketIds.set(playerId, socketId);
     this.socketIndex.set(socketId, { code: room.code, playerId });
     if (displacedSocketId && displacedSocketId !== socketId) this.socketIndex.delete(displacedSocketId);
@@ -173,6 +186,7 @@ export class RoomService {
     room.game = createGameForPlayers(room.players, `room-${room.code}`);
     room.status = "playing";
     room.turnDeadline = now + TURN_DURATION_MS;
+    this.recordReplayFrame(room, now, "Match started");
     return this.commitCommand(room, commandId, now);
   }
 
@@ -182,8 +196,10 @@ export class RoomService {
     const game = this.requirePlayableGame(room);
     if (game.currentPlayerId !== playerId) throw new RoomError("NOT_YOUR_TURN", "Wait for your turn.");
     room.game = rollDie(game, randomInt(1, 7));
+    this.resetMissedTurns(room, playerId);
     if (room.game.winnerId) room.status = "finished";
     room.turnDeadline = room.game.winnerId ? null : now + TURN_DURATION_MS;
+    this.recordReplayFrame(room, now, room.game.events[0]?.message ?? "Die rolled");
     return this.commitCommand(room, commandId, now);
   }
 
@@ -197,8 +213,48 @@ export class RoomService {
     } catch (error) {
       throw new RoomError("ILLEGAL_MOVE", error instanceof Error ? error.message : "That move is not legal.");
     }
+    this.resetMissedTurns(room, playerId);
     if (room.game.winnerId) room.status = "finished";
     room.turnDeadline = room.game.winnerId ? null : now + TURN_DURATION_MS;
+    this.recordReplayFrame(room, now, room.game.events[0]?.message ?? "Token moved");
+    return this.commitCommand(room, commandId, now);
+  }
+
+  leaveRoom(code: string, playerId: string, socketId: string, commandId: string, now = Date.now()): RoomSnapshot | null {
+    const room = this.authorize(code, playerId, socketId);
+    if (room.commandIds.has(commandId)) return this.snapshot(room);
+    const player = room.players.find((candidate) => candidate.id === playerId);
+    if (!player) throw new RoomError("PLAYER_NOT_FOUND", "That player is no longer in the room.");
+
+    this.socketIndex.delete(socketId);
+    room.socketIds.delete(playerId);
+    this.deleteReconnectTokens(room, playerId);
+
+    if (room.status === "waiting") {
+      room.commandIds.add(commandId);
+      room.players = room.players.filter((candidate) => candidate.id !== playerId);
+      room.disconnectedAt.delete(playerId);
+      if (room.players.length === 0) {
+        this.rooms.delete(room.code);
+        return null;
+      }
+      room.players.forEach((candidate, index) => { candidate.color = PLAYER_COLORS[index]; });
+      this.migrateHost(room);
+      return this.commitCommand(room, commandId, now);
+    }
+
+    player.connected = false;
+    player.leftAt = now;
+    player.missedTurns = MAX_MISSED_TURNS;
+    this.syncGameConnections(room);
+    if (room.game && room.status === "playing") {
+      room.game = forfeitPlayer(room.game, playerId, `${player.name} left and forfeited the match`);
+      this.syncGameConnections(room);
+      room.status = room.game.winnerId ? "finished" : "playing";
+      room.turnDeadline = room.game.winnerId ? null : now + TURN_DURATION_MS;
+      this.recordReplayFrame(room, now, room.game.events[0]?.message ?? `${player.name} left`);
+    }
+
     return this.commitCommand(room, commandId, now);
   }
 
@@ -218,7 +274,7 @@ export class RoomService {
     return {
       roomCode: room.code,
       gameId: room.game.id,
-      startedAt: room.createdAt,
+      startedAt: room.replayFrames[0]?.at ?? room.createdAt,
       finishedAt,
       players: room.players.map((player) => ({
         userId: player.accountId,
@@ -226,6 +282,12 @@ export class RoomService {
         color: player.color,
       })),
       winnerUserId: winner?.accountId ?? null,
+      replay: {
+        turnDurationMs: TURN_DURATION_MS,
+        activeDisconnectGraceMs: ACTIVE_DISCONNECT_GRACE_MS,
+        waitingDisconnectGraceMs: WAITING_DISCONNECT_GRACE_MS,
+        frames: structuredClone(room.replayFrames),
+      },
     };
   }
 
@@ -269,18 +331,68 @@ export class RoomService {
       }
 
       if (room.status === "playing" && room.game && room.turnDeadline && room.turnDeadline <= now) {
-        if (!room.players.some((player) => player.connected)) {
+        if (!room.players.some((player) => player.connected && !player.leftAt)) {
           room.turnDeadline = now + TURN_DURATION_MS;
           continue;
         }
-        const current = room.game.players.find((player) => player.id === room.game!.currentPlayerId)!;
-        room.game = skipTurn(room.game, `${current.name}'s turn timed out`);
-        room.turnDeadline = now + TURN_DURATION_MS;
+        this.expireCurrentTurn(room, now);
         this.touch(room, now);
         changed.push(this.snapshot(room));
       }
     }
     return changed;
+  }
+
+  private expireCurrentTurn(room: InternalRoom, now: number) {
+    if (!room.game) return;
+    const current = room.game.players.find((player) => player.id === room.game!.currentPlayerId)!;
+    const roomPlayer = room.players.find((player) => player.id === current.id);
+    if (roomPlayer) roomPlayer.missedTurns += 1;
+
+    if ((roomPlayer?.missedTurns ?? 0) >= MAX_MISSED_TURNS) {
+      if (roomPlayer) {
+        roomPlayer.connected = false;
+        roomPlayer.leftAt = roomPlayer.leftAt ?? now;
+        const socketId = room.socketIds.get(roomPlayer.id);
+        if (socketId) this.socketIndex.delete(socketId);
+        room.socketIds.delete(roomPlayer.id);
+        this.deleteReconnectTokens(room, roomPlayer.id);
+      }
+      room.game = forfeitPlayer(room.game, current.id, `${current.name} was removed after missing ${MAX_MISSED_TURNS} turns`);
+      this.syncGameConnections(room);
+      room.status = room.game.winnerId ? "finished" : "playing";
+      room.turnDeadline = room.game.winnerId ? null : now + TURN_DURATION_MS;
+      this.recordReplayFrame(room, now, room.game.events[0]?.message ?? `${current.name} was removed`);
+      return;
+    }
+
+    room.game = skipTurn(room.game, `${current.name}'s turn timed out`);
+    room.turnDeadline = now + TURN_DURATION_MS;
+    this.recordReplayFrame(room, now, room.game.events[0]?.message ?? `${current.name}'s turn timed out`);
+  }
+
+  private resetMissedTurns(room: InternalRoom, playerId: string) {
+    const player = room.players.find((candidate) => candidate.id === playerId);
+    if (player) player.missedTurns = 0;
+  }
+
+  private deleteReconnectTokens(room: InternalRoom, playerId: string) {
+    for (const [token, tokenPlayerId] of room.reconnectTokens) {
+      if (tokenPlayerId === playerId) room.reconnectTokens.delete(token);
+    }
+  }
+
+  private recordReplayFrame(room: InternalRoom, now: number, label: string) {
+    if (!room.game) return;
+    room.replayFrames.push({
+      at: now,
+      label,
+      turnDeadline: room.turnDeadline,
+      state: structuredClone(room.game),
+    });
+    if (room.replayFrames.length > MAX_REPLAY_FRAMES) {
+      room.replayFrames = room.replayFrames.slice(-MAX_REPLAY_FRAMES);
+    }
   }
 
   private authorize(code: string, playerId: string, socketId: string): InternalRoom {
@@ -335,6 +447,8 @@ export class RoomService {
         name: player.name,
         color: player.color,
         connected: player.connected,
+        leftAt: player.leftAt,
+        missedTurns: player.missedTurns,
         isHost: player.isHost,
         joinedAt: player.joinedAt,
       })),

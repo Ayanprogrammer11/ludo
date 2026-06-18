@@ -10,4 +10,5 @@ export const createRoomSchema = z.strictObject({});
 export const joinRoomSchema = z.strictObject({ code: roomCodeSchema });
 export const resumeRoomSchema = z.strictObject({ code: roomCodeSchema, reconnectToken: reconnectTokenSchema });
 export const commandSchema = z.strictObject({ commandId: commandIdSchema });
+export const leaveRoomSchema = commandSchema;
 export const moveSchema = commandSchema.extend({ tokenId: tokenIdSchema });

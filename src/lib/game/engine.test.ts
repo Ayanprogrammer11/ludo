@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createGame, legalTokenIds, moveToken, rollDie } from "./engine";
+import { createGame, forfeitPlayer, legalTokenIds, moveToken, rollDie } from "./engine";
 
 describe("Ludo rules engine", () => {
   it("only lets a token leave its yard on a six", () => {
@@ -50,6 +50,24 @@ describe("Ludo rules engine", () => {
     expect(game.currentPlayerId).toBe("player-2");
     expect(game.phase).toBe("awaiting_roll");
     expect(game.tokens.find((token) => token.id === "red-0")?.progress).toBe(6);
+  });
+
+  it("skips forfeited players when advancing turns", () => {
+    let game = createGame(["Ada", "Linus", "Grace"]);
+    game = forfeitPlayer(game, "player-2", "Linus left");
+    game = rollDie(game, 3);
+
+    expect(game.currentPlayerId).toBe("player-3");
+    expect(game.players.find((player) => player.id === "player-2")?.forfeited).toBe(true);
+  });
+
+  it("makes the remaining player current when a forfeit wins the game", () => {
+    const game = forfeitPlayer(createGame(["Ada", "Linus"]), "player-1", "Ada left");
+
+    expect(game.phase).toBe("finished");
+    expect(game.winnerId).toBe("player-2");
+    expect(game.currentPlayerId).toBe("player-2");
+    expect(game.events[0].message).toBe("Linus wins by forfeit");
   });
 
   it("cannot pass an opponent blockade", () => {

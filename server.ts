@@ -11,6 +11,7 @@ import {
   commandSchema,
   createRoomSchema,
   joinRoomSchema,
+  leaveRoomSchema,
   moveSchema,
   resumeRoomSchema,
 } from "./src/lib/realtime/schemas";
@@ -289,6 +290,23 @@ io.on("connection", (rawSocket) => {
     });
   });
 
+  socket.on("leave_room", (raw, ack: (result: Ack) => void) => {
+    guard(ack, () => {
+      enforceRateLimit(socket, commandLimiter);
+      const { commandId } = leaveRoomSchema.parse(raw);
+      const identity = requireIdentity(socket);
+      const snapshot = rooms.leaveRoom(identity.roomCode, identity.playerId, socket.id, commandId);
+      socket.leave(identity.roomCode);
+      socket.data.roomCode = undefined;
+      socket.data.playerId = undefined;
+      if (snapshot) {
+        emitSnapshot(snapshot);
+        void recordFinishedMatch(snapshot);
+      }
+      return undefined;
+    });
+  });
+
   socket.on("disconnect", () => {
     const snapshot = rooms.disconnectSocket(socket.id);
     if (snapshot) emitSnapshot(snapshot);
@@ -296,7 +314,10 @@ io.on("connection", (rawSocket) => {
 });
 
 setInterval(() => {
-  for (const snapshot of rooms.maintainRooms()) emitSnapshot(snapshot);
+  for (const snapshot of rooms.maintainRooms()) {
+    emitSnapshot(snapshot);
+    void recordFinishedMatch(snapshot);
+  }
   rooms.deleteExpired();
 }, 1_000).unref();
 

@@ -16,9 +16,10 @@ export function AuthForm({ mode, nextPath }: AuthFormProps) {
   const action = mode === "login" ? loginAction : signupAction;
   const [state, formAction, pending] = useActionState(action, initialState);
   const isSignup = mode === "signup";
+  const submitLabel = pending ? isSignup ? "Creating account..." : "Signing in..." : isSignup ? "Create account" : "Sign in";
 
   return (
-    <form className="auth-form" action={formAction}>
+    <form className="auth-form" action={formAction} aria-busy={pending}>
       <input type="hidden" name="next" value={nextPath} />
       {isSignup ? (
         <label>
@@ -48,7 +49,7 @@ export function AuthForm({ mode, nextPath }: AuthFormProps) {
       {state.message ? <p className="form-error" role="alert">{state.message}</p> : null}
       <button className="primary-action auth-submit" type="submit" disabled={pending}>
         {pending ? <LoaderCircle className="spin" size={18} /> : isSignup ? <UserPlus size={18} /> : <LogIn size={18} />}
-        {isSignup ? "Create account" : "Sign in"}
+        {submitLabel}
         <ArrowRight size={15} />
       </button>
     </form>

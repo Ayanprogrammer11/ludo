@@ -44,10 +44,11 @@ function TokenPiece({ token, legal, onMove }: { token: Token; legal: boolean; on
   );
 }
 
-export function GameBoard({ state, legalIds, onMove }: {
+export function GameBoard({ state, legalIds, onMove, activeColor }: {
   state: GameState;
   legalIds: string[];
   onMove: (id: string) => void;
+  activeColor?: PlayerColor | null;
 }) {
   const tokensByCell = new Map<string, Token[]>();
   for (const token of state.tokens) {
@@ -59,7 +60,7 @@ export function GameBoard({ state, legalIds, onMove }: {
     <div className="board-shell">
       <div className="ludo-board" role="grid" aria-label="Ludo board">
         {(["red", "green", "yellow", "blue"] as const).map((color) => (
-          <div key={color} className={`home-base home-base-${color} ${colorClass[color]}`} aria-hidden="true">
+          <div key={color} className={`home-base home-base-${color} ${colorClass[color]} ${activeColor === color ? "is-active-home" : ""}`} aria-hidden="true">
             <div className="home-base-inner">
               <i /><i /><i /><i />
             </div>

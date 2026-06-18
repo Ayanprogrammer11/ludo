@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { AuthNav } from "@/components/auth/auth-nav";
 import { RoomGame } from "@/components/game/room-game";
+import { RouteLoading } from "@/components/loading/route-loading";
 import { requireSession } from "@/lib/auth/dal";
 
 export const unstable_instant = {
@@ -23,7 +24,7 @@ export default function RoomPage({ params }: { params: Promise<{ code: string }>
         </Suspense>
       </nav>
       <div className="room-wrap">
-        <Suspense fallback={<div className="room-loading"><span className="eyebrow">Private room</span><h1>Opening the table...</h1></div>}>
+        <Suspense fallback={<RouteLoading eyebrow="Private room" title="Opening the table..." detail="Checking your seat and session." />}>
           <ResolvedRoom params={params} />
         </Suspense>
       </div>
