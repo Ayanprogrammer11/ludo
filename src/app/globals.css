@@ -9,6 +9,11 @@
   --green: #3e9b71;
   --yellow: #e6af3a;
   --blue: #4d80b7;
+  --board-surface: #fffdf8;
+  --board-frame: #fffdf8;
+  --board-column: #eee7da;
+  --board-grid-line: rgba(46, 42, 33, .2);
+  --board-home-line: rgba(37, 36, 31, .17);
 }
 
 * { box-sizing: border-box; }
@@ -79,10 +84,10 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .is-yellow.player-dot, .is-yellow.avatar, .token-mini-row .is-yellow { background: var(--yellow); }
 .is-blue.player-dot, .is-blue.avatar, .token-mini-row .is-blue { background: var(--blue); }
 .game-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; }
-.board-column { padding: clamp(14px, 3vw, 38px); display: flex; align-items: center; justify-content: center; background: #eee7da; }
+.board-column { padding: clamp(14px, 3vw, 38px); display: flex; align-items: center; justify-content: center; background: var(--board-column); color-scheme: only light; }
 .board-shell { width: min(100%, 760px); filter: drop-shadow(0 14px 20px rgba(42,37,27,.12)); }
-.ludo-board { aspect-ratio: 1; position: relative; display: grid; grid-template-columns: repeat(15, 1fr); grid-template-rows: repeat(15, 1fr); overflow: hidden; background: #fffdf8; border: 5px solid #fffdf8; border-radius: 13px; }
-.board-cell { position: relative; min-width: 0; border: .5px solid rgba(46, 42, 33, .1); }
+.ludo-board { aspect-ratio: 1; position: relative; display: grid; grid-template-columns: repeat(15, 1fr); grid-template-rows: repeat(15, 1fr); overflow: hidden; background: var(--board-surface); border: 5px solid var(--board-frame); border-radius: 13px; color-scheme: only light; }
+.board-cell { position: relative; min-width: 0; border: 1px solid var(--board-grid-line); }
 .board-cell.is-yard { border-color: transparent; background: transparent; }
 .home-base { position: absolute; width: 40%; height: 40%; padding: 3.2%; z-index: 1; pointer-events: none; }
 .home-base-red { inset: 0 auto auto 0; background: color-mix(in srgb, var(--red) 84%, white); }
@@ -97,7 +102,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   width: 100%;
   height: 100%;
   position: relative;
-  border: 1px solid rgba(37,36,31,.11);
+  border: 1px solid var(--board-home-line);
   border-radius: 18%;
   background: rgba(255,253,248,.92);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.8), 0 4px 12px rgba(37,36,31,.08);
@@ -106,7 +111,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   content: "";
   position: absolute;
   inset: 10%;
-  border: 1px dashed rgba(37,36,31,.09);
+  border: 1px dashed color-mix(in srgb, var(--board-home-line) 76%, transparent);
   border-radius: 14%;
 }
 .home-base-inner i {
@@ -141,7 +146,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .board-cell.is-yard { background: transparent; }
 .board-cell.is-start::after { content: ""; position: absolute; inset: 24%; border: solid white; border-width: 0 3px 3px 0; transform: rotate(-45deg); opacity: .82; }
 .board-cell.is-center { background: transparent; border-color: transparent; }
-.safe-star { position: absolute; inset: 25%; width: 50%; height: 50%; color: rgba(37,36,31,.25); fill: rgba(37,36,31,.08); stroke-width: 1.5; }
+.safe-star { position: absolute; inset: 25%; width: 50%; height: 50%; color: rgba(37,36,31,.38); fill: rgba(37,36,31,.12); stroke-width: 1.5; }
 .center-mark { position: absolute; inset: 40% 40%; overflow: hidden; border-radius: 50%; background: white; box-shadow: 0 0 0 3px #fff, 0 4px 12px rgba(0,0,0,.18); z-index: 2; }
 .center-mark span { position: absolute; width: 50%; height: 50%; }
 .center-red { left: 0; top: 0; background: var(--red); }
@@ -261,11 +266,14 @@ footer { min-height: 100px; display: flex; justify-content: space-between; align
   cursor: pointer;
   font-size: 10px;
   font-weight: 800;
+  line-height: 1;
   letter-spacing: .05em;
+  text-align: center;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 .primary-action { color: #fff; background: var(--red); }
-.primary-action svg:last-child { margin-left: auto; }
+.primary-action svg, .secondary-action svg, .code-button svg { flex: 0 0 auto; }
 .secondary-action { color: inherit; border: 1px solid currentColor; background: transparent; }
 .primary-action:disabled, .secondary-action:disabled { opacity: .4; cursor: not-allowed; }
 .lobby-login { grid-column: 1 / -1; color: #f9f4ea; text-decoration: none; }

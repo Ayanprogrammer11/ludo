@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { ArrowRight, LoaderCircle, LogIn, Plus, Users } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useLayoutEffect, useState, useTransition } from "react";
 import { LinkPendingIndicator } from "@/components/loading/link-pending-indicator";
 import type { SafeUser } from "@/lib/auth/types";
 import { emitAck, getRealtimeSocket, saveRoomIdentity } from "@/lib/realtime/client";
@@ -16,9 +16,16 @@ export function OnlineLobby({ user }: { user: SafeUser | null }) {
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState<"create" | "join" | null>(null);
   const [navigating, setNavigating] = useState<"create" | "join" | null>(null);
-  const [, startTransition] = useTransition();
+  const [routePending, startTransition] = useTransition();
   const [error, setError] = useState("");
-  const pending = busy ?? navigating;
+  const pending = busy ?? (routePending ? navigating : null);
+
+  useLayoutEffect(() => {
+    return () => {
+      setBusy(null);
+      setNavigating(null);
+    };
+  }, []);
 
   async function submit(kind: "create" | "join") {
     if (!user) {
@@ -26,22 +33,27 @@ export function OnlineLobby({ user }: { user: SafeUser | null }) {
       return;
     }
     setBusy(kind);
+    setNavigating(null);
     setError("");
-    const socket = getRealtimeSocket();
-    if (!socket.connected) socket.connect();
-    const result = await emitAck<JoinAck>(
-      kind === "create" ? "create_room" : "join_room",
-      kind === "create" ? {} : { code },
-    );
-    if (!result.ok) {
+    try {
+      const socket = getRealtimeSocket();
+      if (!socket.connected) socket.connect();
+      const result = await emitAck<JoinAck>(
+        kind === "create" ? "create_room" : "join_room",
+        kind === "create" ? {} : { code },
+      );
+      if (!result.ok) {
+        setError(result.error.message);
+        return;
+      }
+      saveRoomIdentity(result.identity);
+      setNavigating(kind);
+      startTransition(() => router.push(`/room/${result.identity.roomCode}`));
+    } catch {
+      setError("The room server could not be reached. Try again in a moment.");
+    } finally {
       setBusy(null);
-      setError(result.error.message);
-      return;
     }
-    saveRoomIdentity(result.identity);
-    setBusy(null);
-    setNavigating(kind);
-    startTransition(() => router.push(`/room/${result.identity.roomCode}`));
   }
 
   return (
