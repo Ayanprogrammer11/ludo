@@ -1,4 +1,5 @@
 import { ArrowRight, Radio, ShieldCheck, Users } from "lucide-react";
+import Link from "next/link";
 import { Suspense } from "react";
 import { AuthNav } from "@/components/auth/auth-nav";
 import { LocalGame } from "@/components/game/local-game";
@@ -13,10 +14,10 @@ export default function Home() {
   return (
     <main>
       <nav className="site-nav">
-        <a className="brand" href="#" aria-label="Ludo home">
+        <Link className="brand" href="/" aria-label="Ludo home">
           <span className="brand-mark"><i /><i /><i /><i /></span>
           <span>Ludo<span className="brand-accent">.</span></span>
-        </a>
+        </Link>
         <div className="nav-status"><Radio size={14} /> Live multiplayer</div>
         <Suspense fallback={<div className="nav-status">Account</div>}>
           <AuthNav />

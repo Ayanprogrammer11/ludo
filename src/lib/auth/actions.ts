@@ -2,6 +2,7 @@
 
 import "server-only";
 
+import type { Route } from "next";
 import { revalidatePath } from "next/cache";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
@@ -78,7 +79,7 @@ export async function signupAction(_state: AuthActionState, formData: FormData):
 
   await setSessionCookie(session.token, session.expiresAt);
   revalidatePath("/");
-  redirect(next);
+  redirect(next as Route);
 }
 
 export async function loginAction(_state: AuthActionState, formData: FormData): Promise<AuthActionState> {
@@ -105,7 +106,7 @@ export async function loginAction(_state: AuthActionState, formData: FormData): 
 
   await setSessionCookie(session.token, session.expiresAt);
   revalidatePath("/");
-  redirect(next);
+  redirect(next as Route);
 }
 
 export async function logoutAction() {

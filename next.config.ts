@@ -21,6 +21,7 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   poweredByHeader: false,
   reactCompiler: true,
+  typedRoutes: true,
   experimental: {
     instantNavigationDevToolsToggle: true,
   },
@@ -34,6 +35,7 @@ const nextConfig: NextConfig = {
         { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()" },
         { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
         { key: "X-Content-Type-Options", value: "nosniff" },
+        { key: "X-Accel-Buffering", value: "no" },
         { key: "X-Frame-Options", value: "DENY" },
         ...(!isDevelopment
           ? [{ key: "Strict-Transport-Security", value: "max-age=31536000" }]

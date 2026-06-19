@@ -1,21 +1,26 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { SESSION_TTL_MS } from "./cookies";
 import { hashPassword, verifyPassword } from "./password";
 import type {
   AccountDashboard,
   AuthData,
   FinishedRoomMatch,
+  MatchReplay,
   RecentMatch,
   SafeUser,
   SessionValidation,
   StoredMatch,
+  StoredMatchPlayer,
   StoredSession,
   StoredUser,
+  UserRole,
 } from "./types";
 
-const AUTH_STORE_FILE = "auth-store.json";
+const AUTH_DB_FILE = "auth-store.sqlite";
+const LEGACY_AUTH_STORE_FILE = "auth-store.json";
 const MAX_FAILED_LOGINS = 8;
 const LOGIN_LOCK_MS = 15 * 60 * 1000;
 const SESSION_TOUCH_INTERVAL_MS = 15 * 60 * 1000;
@@ -28,16 +33,16 @@ class AuthError extends Error {
   }
 }
 
-function initialData(): AuthData {
-  return { version: 1, users: [], sessions: [], matches: [] };
-}
-
 function dataDir() {
   return process.env.AUTH_DATA_DIR || path.join(process.cwd(), ".data");
 }
 
 function storePath() {
-  return path.join(dataDir(), AUTH_STORE_FILE);
+  return path.join(dataDir(), AUTH_DB_FILE);
+}
+
+function legacyStorePath() {
+  return path.join(dataDir(), LEGACY_AUTH_STORE_FILE);
 }
 
 function normalizeEmail(email: string) {
@@ -52,6 +57,49 @@ function hashUserAgent(userAgent: string | null | undefined) {
   return userAgent ? createHash("sha256").update(userAgent.slice(0, 512)).digest("base64url") : null;
 }
 
+type UserRow = {
+  id: string;
+  email: string;
+  email_normalized: string;
+  display_name: string;
+  role: UserRole;
+  created_at: number;
+  updated_at: number;
+  password_hash: string;
+  password_salt: string;
+  password_updated_at: number;
+  failed_login_count: number;
+  locked_until: number | null;
+  last_login_at: number | null;
+};
+
+type SessionRow = {
+  id: string;
+  user_id: string;
+  token_hash: string;
+  created_at: number;
+  expires_at: number;
+  last_seen_at: number;
+  user_agent_hash: string | null;
+  revoked_at: number | null;
+};
+
+type MatchRow = {
+  id: string;
+  room_code: string;
+  game_id: string;
+  started_at: number;
+  finished_at: number;
+  winner_user_id: string | null;
+  replay_json: string | null;
+};
+
+type MatchPlayerRow = {
+  user_id: string;
+  name: string;
+  color: StoredMatchPlayer["color"];
+};
+
 function toSafeUser(user: StoredUser): SafeUser {
   return {
     id: user.id,
@@ -60,6 +108,41 @@ function toSafeUser(user: StoredUser): SafeUser {
     role: user.role,
     createdAt: user.createdAt,
   };
+}
+
+function toStoredUser(row: UserRow): StoredUser {
+  return {
+    id: row.id,
+    email: row.email,
+    emailNormalized: row.email_normalized,
+    displayName: row.display_name,
+    role: row.role,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    passwordHash: row.password_hash,
+    passwordSalt: row.password_salt,
+    passwordUpdatedAt: row.password_updated_at,
+    failedLoginCount: row.failed_login_count,
+    lockedUntil: row.locked_until,
+    lastLoginAt: row.last_login_at,
+  };
+}
+
+function toStoredSession(row: SessionRow): StoredSession {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    tokenHash: row.token_hash,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    lastSeenAt: row.last_seen_at,
+    userAgentHash: row.user_agent_hash,
+    revokedAt: row.revoked_at,
+  };
+}
+
+function parseReplay(raw: string | null): MatchReplay | null {
+  return raw ? JSON.parse(raw) as MatchReplay : null;
 }
 
 function matchOutcome(match: StoredMatch, userId: string): RecentMatch {
@@ -75,14 +158,20 @@ function matchOutcome(match: StoredMatch, userId: string): RecentMatch {
   };
 }
 
+function isSqliteConstraint(error: unknown) {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === "SQLITE_CONSTRAINT_UNIQUE");
+}
+
 export class AuthStore {
   private queue = Promise.resolve();
+  private database: Database.Database | null = null;
+  private databasePath: string | null = null;
 
   async registerUser(input: { email: string; displayName: string; password: string }, now = Date.now()) {
     return this.enqueue(async () => {
-      const data = await this.read();
+      const db = this.db();
       const emailNormalized = normalizeEmail(input.email);
-      if (data.users.some((user) => user.emailNormalized === emailNormalized)) {
+      if (this.userByEmail(db, emailNormalized)) {
         throw new AuthError("EMAIL_IN_USE", "An account already exists for that email.");
       }
 
@@ -102,54 +191,71 @@ export class AuthStore {
         lockedUntil: null,
         lastLoginAt: null,
       };
-      data.users.push(user);
-      await this.write(data);
+
+      try {
+        this.insertUser(db, user);
+      } catch (error) {
+        if (isSqliteConstraint(error)) throw new AuthError("EMAIL_IN_USE", "An account already exists for that email.");
+        throw error;
+      }
       return toSafeUser(user);
     });
   }
 
   async authenticate(input: { email: string; password: string; userAgent?: string | null }, now = Date.now()) {
     return this.enqueue(async () => {
-      const data = await this.read();
+      const db = this.db();
       const emailNormalized = normalizeEmail(input.email);
-      const user = data.users.find((candidate) => candidate.emailNormalized === emailNormalized);
+      const user = this.userByEmail(db, emailNormalized);
       const locked = user?.lockedUntil && user.lockedUntil > now;
       const passwordMatches = await verifyPassword(input.password, user?.passwordSalt, user?.passwordHash);
 
       if (!user || locked || !passwordMatches) {
         if (user && !locked) {
-          user.failedLoginCount += 1;
-          if (user.failedLoginCount >= MAX_FAILED_LOGINS) user.lockedUntil = now + LOGIN_LOCK_MS;
-          user.updatedAt = now;
-          await this.write(data);
+          const failedLoginCount = user.failedLoginCount + 1;
+          db.prepare(`
+            UPDATE users
+            SET failed_login_count = ?, locked_until = ?, updated_at = ?
+            WHERE id = ?
+          `).run(
+            failedLoginCount,
+            failedLoginCount >= MAX_FAILED_LOGINS ? now + LOGIN_LOCK_MS : null,
+            now,
+            user.id,
+          );
         }
         throw new AuthError("INVALID_CREDENTIALS", "The email or password was not accepted.");
       }
 
-      user.failedLoginCount = 0;
-      user.lockedUntil = null;
-      user.lastLoginAt = now;
-      user.updatedAt = now;
       const session = this.createSessionRecord(user.id, input.userAgent, now);
-      data.sessions = data.sessions
-        .filter((candidate) => candidate.userId !== user.id || (!candidate.revokedAt && candidate.expiresAt > now))
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .slice(0, MAX_SESSIONS_PER_USER - 1)
-        .concat(session.record);
-      await this.write(data);
-      return { user: toSafeUser(user), token: session.token, expiresAt: session.record.expiresAt };
+      const writeLogin = db.transaction(() => {
+        db.prepare(`
+          UPDATE users
+          SET failed_login_count = 0, locked_until = NULL, last_login_at = ?, updated_at = ?
+          WHERE id = ?
+        `).run(now, now, user.id);
+        this.cleanExpiredSessions(db, now);
+        this.pruneUserSessions(db, user.id, MAX_SESSIONS_PER_USER - 1);
+        this.insertSession(db, session.record);
+      });
+      writeLogin();
+
+      return { user: toSafeUser({ ...user, failedLoginCount: 0, lockedUntil: null, lastLoginAt: now, updatedAt: now }), token: session.token, expiresAt: session.record.expiresAt };
     });
   }
 
   async createSession(userId: string, userAgent?: string | null, now = Date.now()) {
     return this.enqueue(async () => {
-      const data = await this.read();
-      const user = data.users.find((candidate) => candidate.id === userId);
+      const db = this.db();
+      const user = this.userById(db, userId);
       if (!user) throw new AuthError("USER_NOT_FOUND", "User does not exist.");
       const session = this.createSessionRecord(user.id, userAgent, now);
-      data.sessions = data.sessions.filter((candidate) => candidate.expiresAt > now && !candidate.revokedAt);
-      data.sessions.push(session.record);
-      await this.write(data);
+      const writeSession = db.transaction(() => {
+        this.cleanExpiredSessions(db, now);
+        this.pruneUserSessions(db, user.id, MAX_SESSIONS_PER_USER - 1);
+        this.insertSession(db, session.record);
+      });
+      writeSession();
       return { user: toSafeUser(user), token: session.token, expiresAt: session.record.expiresAt };
     });
   }
@@ -158,16 +264,18 @@ export class AuthStore {
     if (!token || token.length < 32 || token.length > 256) return null;
     const checkedAt = now ?? Date.now();
     return this.enqueue(async () => {
-      const data = await this.read();
-      const session = data.sessions.find((candidate) => candidate.tokenHash === tokenHash(token));
+      const db = this.db();
+      const session = this.sessionByToken(db, tokenHash(token));
       if (!session || session.revokedAt || session.expiresAt <= checkedAt) return null;
-      const user = data.users.find((candidate) => candidate.id === session.userId);
+      const user = this.userById(db, session.userId);
       if (!user) return null;
 
       if (checkedAt - session.lastSeenAt >= SESSION_TOUCH_INTERVAL_MS) {
-        session.lastSeenAt = checkedAt;
-        data.sessions = data.sessions.filter((candidate) => candidate.expiresAt > checkedAt && !candidate.revokedAt);
-        await this.write(data);
+        const touchSession = db.transaction(() => {
+          db.prepare("UPDATE sessions SET last_seen_at = ? WHERE id = ?").run(checkedAt, session.id);
+          this.cleanExpiredSessions(db, checkedAt);
+        });
+        touchSession();
       }
 
       return {
@@ -181,57 +289,73 @@ export class AuthStore {
   async revokeSessionToken(token: string | null | undefined, now = Date.now()) {
     if (!token) return;
     await this.enqueue(async () => {
-      const data = await this.read();
-      const session = data.sessions.find((candidate) => candidate.tokenHash === tokenHash(token));
-      if (session && !session.revokedAt) {
-        session.revokedAt = now;
-        await this.write(data);
-      }
+      this.db().prepare(`
+        UPDATE sessions
+        SET revoked_at = ?
+        WHERE token_hash = ? AND revoked_at IS NULL
+      `).run(now, tokenHash(token));
     });
   }
 
   async updateProfile(userId: string, input: { displayName: string }, now = Date.now()) {
     return this.enqueue(async () => {
-      const data = await this.read();
-      const user = data.users.find((candidate) => candidate.id === userId);
+      const db = this.db();
+      const user = this.userById(db, userId);
       if (!user) throw new AuthError("USER_NOT_FOUND", "User does not exist.");
-      user.displayName = input.displayName.trim();
-      user.updatedAt = now;
-      await this.write(data);
-      return toSafeUser(user);
+      db.prepare("UPDATE users SET display_name = ?, updated_at = ? WHERE id = ?").run(input.displayName.trim(), now, userId);
+      return toSafeUser({ ...user, displayName: input.displayName.trim(), updatedAt: now });
     });
   }
 
   async recordMatch(match: FinishedRoomMatch) {
     return this.enqueue(async () => {
-      const data = await this.read();
+      const db = this.db();
       const matchId = `${match.roomCode}:${match.gameId}:${match.startedAt}`;
-      if (data.matches.some((candidate) => candidate.id === matchId)) return false;
-      data.matches.push({
-        id: matchId,
-        roomCode: match.roomCode,
-        gameId: match.gameId,
-        startedAt: match.startedAt,
-        finishedAt: match.finishedAt,
-        players: match.players,
-        winnerUserId: match.winnerUserId,
-        replay: match.replay,
+      const writeMatch = db.transaction(() => {
+        const existing = db.prepare("SELECT id FROM matches WHERE id = ?").get(matchId);
+        if (existing) return false;
+
+        db.prepare(`
+          INSERT INTO matches (id, room_code, game_id, started_at, finished_at, winner_user_id, replay_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          matchId,
+          match.roomCode,
+          match.gameId,
+          match.startedAt,
+          match.finishedAt,
+          match.winnerUserId,
+          JSON.stringify(match.replay),
+        );
+
+        const insertPlayer = db.prepare(`
+          INSERT INTO match_players (match_id, user_id, name, color, position)
+          VALUES (?, ?, ?, ?, ?)
+        `);
+        match.players.forEach((player, index) => {
+          insertPlayer.run(matchId, player.userId, player.name, player.color, index);
+        });
+        this.pruneMatches(db);
+        return true;
       });
-      if (data.matches.length > MAX_MATCHES) data.matches = data.matches.slice(-MAX_MATCHES);
-      await this.write(data);
-      return true;
+      return writeMatch();
     });
   }
 
   async getDashboard(userId: string): Promise<AccountDashboard | null> {
     return this.enqueue(async () => {
-      const data = await this.read();
-      const user = data.users.find((candidate) => candidate.id === userId);
+      const db = this.db();
+      const user = this.userById(db, userId);
       if (!user) return null;
 
-      const matches = data.matches
-        .filter((match) => match.players.some((player) => player.userId === userId))
-        .sort((a, b) => b.finishedAt - a.finishedAt);
+      const rows = db.prepare(`
+        SELECT m.*
+        FROM matches m
+        INNER JOIN match_players mp ON mp.match_id = m.id
+        WHERE mp.user_id = ?
+        ORDER BY m.finished_at DESC, m.started_at DESC
+      `).all(userId) as MatchRow[];
+      const matches = rows.map((row) => this.toStoredMatch(db, row));
       const wins = matches.filter((match) => match.winnerUserId === userId).length;
       const losses = matches.length - wins;
       return {
@@ -249,10 +373,17 @@ export class AuthStore {
 
   async getMatchForUser(userId: string, matchId: string): Promise<StoredMatch | null> {
     return this.enqueue(async () => {
-      const data = await this.read();
-      const match = data.matches.find((candidate) => candidate.id === matchId);
-      if (!match?.players.some((player) => player.userId === userId)) return null;
-      return structuredClone(match);
+      const db = this.db();
+      const row = db.prepare(`
+        SELECT m.*
+        FROM matches m
+        WHERE m.id = ?
+          AND EXISTS (
+            SELECT 1 FROM match_players mp
+            WHERE mp.match_id = m.id AND mp.user_id = ?
+          )
+      `).get(matchId, userId) as MatchRow | undefined;
+      return row ? this.toStoredMatch(db, row) : null;
     });
   }
 
@@ -277,30 +408,244 @@ export class AuthStore {
     return next;
   }
 
-  private async read(): Promise<AuthData> {
-    await mkdir(dataDir(), { recursive: true, mode: 0o700 });
+  private db() {
+    const nextPath = storePath();
+    if (this.database && this.databasePath === nextPath) return this.database;
+
+    this.database?.close();
+    mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
+    const db = new Database(nextPath, { timeout: 5_000 });
+    db.pragma("foreign_keys = ON");
+    db.pragma("journal_mode = WAL");
+    db.pragma("synchronous = NORMAL");
+    this.createSchema(db);
+    this.migrateLegacyJson(db);
     try {
-      const raw = await readFile(storePath(), "utf8");
-      const parsed = JSON.parse(raw) as AuthData;
-      if (parsed.version !== 1 || !Array.isArray(parsed.users) || !Array.isArray(parsed.sessions) || !Array.isArray(parsed.matches)) {
-        throw new Error("Auth store is malformed.");
-      }
-      return parsed;
-    } catch (error) {
-      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-        const data = initialData();
-        await this.write(data);
-        return data;
-      }
-      throw error;
+      chmodSync(nextPath, 0o600);
+    } catch {
+      // Some filesystems do not support chmod; SQLite can still operate safely.
     }
+
+    this.database = db;
+    this.databasePath = nextPath;
+    return db;
   }
 
-  private async write(data: AuthData) {
-    await mkdir(dataDir(), { recursive: true, mode: 0o700 });
-    const tempPath = path.join(dataDir(), `${AUTH_STORE_FILE}.${randomUUID()}.tmp`);
-    await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
-    await rename(tempPath, storePath());
+  private createSchema(db: Database.Database) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS auth_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        email_normalized TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('user', 'admin')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        password_hash TEXT NOT NULL,
+        password_salt TEXT NOT NULL,
+        password_updated_at INTEGER NOT NULL,
+        failed_login_count INTEGER NOT NULL DEFAULT 0,
+        locked_until INTEGER,
+        last_login_at INTEGER
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        user_agent_hash TEXT,
+        revoked_at INTEGER
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS matches (
+        id TEXT PRIMARY KEY,
+        room_code TEXT NOT NULL,
+        game_id TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER NOT NULL,
+        winner_user_id TEXT,
+        replay_json TEXT
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS match_players (
+        match_id TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        color TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        PRIMARY KEY (match_id, user_id)
+      ) STRICT;
+
+      CREATE INDEX IF NOT EXISTS sessions_user_active_idx ON sessions(user_id, revoked_at, expires_at, created_at);
+      CREATE INDEX IF NOT EXISTS sessions_token_hash_idx ON sessions(token_hash);
+      CREATE INDEX IF NOT EXISTS matches_finished_idx ON matches(finished_at DESC, started_at DESC);
+      CREATE INDEX IF NOT EXISTS match_players_user_idx ON match_players(user_id, match_id);
+    `);
+    db.prepare("INSERT OR REPLACE INTO auth_meta (key, value) VALUES ('schema_version', '1')").run();
+  }
+
+  private migrateLegacyJson(db: Database.Database) {
+    const alreadyImported = db.prepare("SELECT value FROM auth_meta WHERE key = 'legacy_json_imported'").get();
+    if (alreadyImported || !existsSync(legacyStorePath())) return;
+
+    const existingRows = db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM users)
+        + (SELECT COUNT(*) FROM sessions)
+        + (SELECT COUNT(*) FROM matches) AS count
+    `).get() as { count: number };
+    if (existingRows.count > 0) {
+      db.prepare("INSERT OR REPLACE INTO auth_meta (key, value) VALUES ('legacy_json_imported', 'skipped-existing-data')").run();
+      return;
+    }
+
+    const parsed = JSON.parse(readFileSync(legacyStorePath(), "utf8")) as AuthData;
+    if (parsed.version !== 1 || !Array.isArray(parsed.users) || !Array.isArray(parsed.sessions) || !Array.isArray(parsed.matches)) {
+      throw new Error("Legacy auth store is malformed.");
+    }
+
+    const migrate = db.transaction((data: AuthData) => {
+      for (const user of data.users) this.insertUser(db, user);
+      for (const session of data.sessions) this.insertSession(db, session);
+      for (const match of data.matches) {
+        db.prepare(`
+          INSERT INTO matches (id, room_code, game_id, started_at, finished_at, winner_user_id, replay_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          match.id,
+          match.roomCode,
+          match.gameId,
+          match.startedAt,
+          match.finishedAt,
+          match.winnerUserId,
+          match.replay ? JSON.stringify(match.replay) : null,
+        );
+        const insertPlayer = db.prepare(`
+          INSERT INTO match_players (match_id, user_id, name, color, position)
+          VALUES (?, ?, ?, ?, ?)
+        `);
+        match.players.forEach((player, index) => insertPlayer.run(match.id, player.userId, player.name, player.color, index));
+      }
+      db.prepare("INSERT OR REPLACE INTO auth_meta (key, value) VALUES ('legacy_json_imported', ?)").run(String(Date.now()));
+    });
+    migrate(parsed);
+  }
+
+  private insertUser(db: Database.Database, user: StoredUser) {
+    db.prepare(`
+      INSERT INTO users (
+        id, email, email_normalized, display_name, role, created_at, updated_at,
+        password_hash, password_salt, password_updated_at, failed_login_count,
+        locked_until, last_login_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      user.id,
+      user.email,
+      user.emailNormalized,
+      user.displayName,
+      user.role,
+      user.createdAt,
+      user.updatedAt,
+      user.passwordHash,
+      user.passwordSalt,
+      user.passwordUpdatedAt,
+      user.failedLoginCount,
+      user.lockedUntil,
+      user.lastLoginAt,
+    );
+  }
+
+  private insertSession(db: Database.Database, session: StoredSession) {
+    db.prepare(`
+      INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at, last_seen_at, user_agent_hash, revoked_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      session.id,
+      session.userId,
+      session.tokenHash,
+      session.createdAt,
+      session.expiresAt,
+      session.lastSeenAt,
+      session.userAgentHash,
+      session.revokedAt,
+    );
+  }
+
+  private userById(db: Database.Database, userId: string) {
+    const row = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as UserRow | undefined;
+    return row ? toStoredUser(row) : null;
+  }
+
+  private userByEmail(db: Database.Database, emailNormalized: string) {
+    const row = db.prepare("SELECT * FROM users WHERE email_normalized = ?").get(emailNormalized) as UserRow | undefined;
+    return row ? toStoredUser(row) : null;
+  }
+
+  private sessionByToken(db: Database.Database, hashedToken: string) {
+    const row = db.prepare("SELECT * FROM sessions WHERE token_hash = ?").get(hashedToken) as SessionRow | undefined;
+    return row ? toStoredSession(row) : null;
+  }
+
+  private cleanExpiredSessions(db: Database.Database, now: number) {
+    db.prepare("DELETE FROM sessions WHERE expires_at <= ? OR revoked_at IS NOT NULL").run(now);
+  }
+
+  private pruneUserSessions(db: Database.Database, userId: string, keep: number) {
+    db.prepare(`
+      DELETE FROM sessions
+      WHERE user_id = ?
+        AND id NOT IN (
+          SELECT id
+          FROM sessions
+          WHERE user_id = ?
+          ORDER BY created_at DESC
+          LIMIT ?
+        )
+    `).run(userId, userId, keep);
+  }
+
+  private pruneMatches(db: Database.Database) {
+    db.prepare(`
+      DELETE FROM matches
+      WHERE id NOT IN (
+        SELECT id
+        FROM matches
+        ORDER BY finished_at DESC, started_at DESC
+        LIMIT ?
+      )
+    `).run(MAX_MATCHES);
+  }
+
+  private toStoredMatch(db: Database.Database, row: MatchRow): StoredMatch {
+    const players = db.prepare(`
+      SELECT user_id, name, color
+      FROM match_players
+      WHERE match_id = ?
+      ORDER BY position ASC
+    `).all(row.id) as MatchPlayerRow[];
+    return {
+      id: row.id,
+      roomCode: row.room_code,
+      gameId: row.game_id,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at,
+      winnerUserId: row.winner_user_id,
+      players: players.map((player) => ({
+        userId: player.user_id,
+        name: player.name,
+        color: player.color,
+      })),
+      replay: parseReplay(row.replay_json),
+    };
   }
 }
 

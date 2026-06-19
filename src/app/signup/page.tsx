@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import type { Route } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { AuthForm } from "@/components/auth/auth-form";
@@ -32,7 +33,7 @@ async function SignupGate({ searchParams }: { searchParams: Promise<{ next?: str
   const params = await searchParams;
   const nextPath = safeNextPath(params.next);
   const user = await getOptionalUser();
-  if (user) redirect(nextPath);
+  if (user) redirect(nextPath as Route);
   return <AuthShell mode="signup" nextPath={nextPath} />;
 }
 

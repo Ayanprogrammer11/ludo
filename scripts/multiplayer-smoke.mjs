@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { io } from "socket.io-client";
 
 const url = process.env.LUDO_URL ?? "http://localhost:3000";
 const origin = new URL(url).origin;
 const authDataDir = process.env.AUTH_DATA_DIR || path.join(process.cwd(), ".data");
-const authStorePath = path.join(authDataDir, "auth-store.json");
+const authStorePath = path.join(authDataDir, "auth-store.sqlite");
 const sessionCookieName = "ludo_session";
+let authDb;
 
 function connect(options = {}) {
   return new Promise((resolve, reject) => {
@@ -21,21 +23,40 @@ function connect(options = {}) {
   });
 }
 
-async function readAuthStore() {
+async function getAuthDb() {
   await mkdir(authDataDir, { recursive: true, mode: 0o700 });
-  try {
-    return JSON.parse(await readFile(authStorePath, "utf8"));
-  } catch (error) {
-    if (error?.code === "ENOENT") return { version: 1, users: [], sessions: [], matches: [] };
-    throw error;
-  }
-}
-
-async function writeAuthStore(data) {
-  await mkdir(authDataDir, { recursive: true, mode: 0o700 });
-  const tempPath = path.join(authDataDir, `auth-store.${randomUUID()}.tmp`);
-  await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
-  await rename(tempPath, authStorePath);
+  if (authDb) return authDb;
+  authDb = new Database(authStorePath, { timeout: 5_000 });
+  authDb.pragma("foreign_keys = ON");
+  authDb.pragma("journal_mode = WAL");
+  authDb.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      email_normalized TEXT NOT NULL UNIQUE,
+      display_name TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('user', 'admin')),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      password_hash TEXT NOT NULL,
+      password_salt TEXT NOT NULL,
+      password_updated_at INTEGER NOT NULL,
+      failed_login_count INTEGER NOT NULL DEFAULT 0,
+      locked_until INTEGER,
+      last_login_at INTEGER
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      user_agent_hash TEXT,
+      revoked_at INTEGER
+    ) STRICT;
+  `);
+  return authDb;
 }
 
 async function createSmokeSession(displayName) {
@@ -43,33 +64,28 @@ async function createSmokeSession(displayName) {
   const token = randomBytes(32).toString("base64url");
   const emailNormalized = `${displayName.toLowerCase()}-${randomUUID()}@smoke.local`;
   const userId = randomUUID();
-  const data = await readAuthStore();
-  data.users.push({
-    id: userId,
-    email: emailNormalized,
-    emailNormalized,
-    displayName,
-    role: "user",
-    createdAt: now,
-    updatedAt: now,
-    passwordHash: "smoke",
-    passwordSalt: "smoke",
-    passwordUpdatedAt: now,
-    failedLoginCount: 0,
-    lockedUntil: null,
-    lastLoginAt: now,
-  });
-  data.sessions.push({
-    id: randomUUID(),
-    userId,
-    tokenHash: createHash("sha256").update(token).digest("base64url"),
-    createdAt: now,
-    expiresAt: now + 7 * 24 * 60 * 60 * 1000,
-    lastSeenAt: now,
-    userAgentHash: null,
-    revokedAt: null,
-  });
-  await writeAuthStore(data);
+  const db = await getAuthDb();
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO users (
+        id, email, email_normalized, display_name, role, created_at, updated_at,
+        password_hash, password_salt, password_updated_at, failed_login_count,
+        locked_until, last_login_at
+      )
+      VALUES (?, ?, ?, ?, 'user', ?, ?, 'smoke', 'smoke', ?, 0, NULL, ?)
+    `).run(userId, emailNormalized, emailNormalized, displayName, now, now, now, now);
+    db.prepare(`
+      INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at, last_seen_at, user_agent_hash, revoked_at)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)
+    `).run(
+      randomUUID(),
+      userId,
+      createHash("sha256").update(token).digest("base64url"),
+      now,
+      now + 7 * 24 * 60 * 60 * 1000,
+      now,
+    );
+  })();
   return `${sessionCookieName}=${token}`;
 }
 
@@ -146,4 +162,5 @@ assert.equal(resumed.snapshot.players.find((player) => player.id === joined.iden
 
 host.disconnect();
 resumedGuest.disconnect();
+authDb?.close();
 console.log(`Multiplayer smoke passed for room ${created.identity.roomCode}`);

@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -40,6 +41,7 @@ describe("AuthStore", () => {
 
     await store.revokeSessionToken(login.token, 6);
     await expect(store.validateSessionToken(login.token, 7)).resolves.toBeNull();
+    await expect(access(path.join(authDataDir, "auth-store.sqlite"))).resolves.toBeUndefined();
   });
 
   it("records finished matches idempotently and builds dashboard stats", async () => {
@@ -74,5 +76,55 @@ describe("AuthStore", () => {
     expect(linusDashboard?.stats).toEqual({ matchesPlayed: 1, wins: 0, losses: 1, winRate: 0 });
     expect(adaDashboard?.recentMatches[0].winnerName).toBe("Ada");
     expect(adaDashboard?.recentMatches[0].hasReplay).toBe(false);
+  });
+
+  it("migrates a legacy JSON auth store into SQLite", async () => {
+    const token = "legacy-session-token-123456789012";
+    await writeFile(path.join(authDataDir, "auth-store.json"), `${JSON.stringify({
+      version: 1,
+      users: [{
+        id: "legacy-user",
+        email: "legacy@example.com",
+        emailNormalized: "legacy@example.com",
+        displayName: "Legacy",
+        role: "user",
+        createdAt: 1,
+        updatedAt: 1,
+        passwordHash: "hash",
+        passwordSalt: "salt",
+        passwordUpdatedAt: 1,
+        failedLoginCount: 0,
+        lockedUntil: null,
+        lastLoginAt: 2,
+      }],
+      sessions: [{
+        id: "legacy-session",
+        userId: "legacy-user",
+        tokenHash: createHash("sha256").update(token).digest("base64url"),
+        createdAt: 2,
+        expiresAt: 10_000,
+        lastSeenAt: 2,
+        userAgentHash: null,
+        revokedAt: null,
+      }],
+      matches: [{
+        id: "ABC234:legacy-game:20",
+        roomCode: "ABC234",
+        gameId: "legacy-game",
+        startedAt: 20,
+        finishedAt: 30,
+        winnerUserId: "legacy-user",
+        players: [{ userId: "legacy-user", name: "Legacy", color: "red" }],
+        replay: null,
+      }],
+    })}\n`);
+
+    const store = new AuthStore();
+    const session = await store.validateSessionToken(token, 3);
+    const dashboard = await store.getDashboard("legacy-user");
+
+    expect(session?.user.displayName).toBe("Legacy");
+    expect(dashboard?.stats).toEqual({ matchesPlayed: 1, wins: 1, losses: 0, winRate: 100 });
+    await expect(access(path.join(authDataDir, "auth-store.sqlite"))).resolves.toBeUndefined();
   });
 });

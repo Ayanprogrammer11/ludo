@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { Route } from "next";
 import { cache } from "react";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
@@ -19,7 +20,7 @@ export async function requireSession(nextPath?: string) {
   const session = await getOptionalSession();
   if (!session) {
     const next = safeNextPath(nextPath, "/account");
-    redirect(`/login?next=${encodeURIComponent(next)}`);
+    redirect(`/login?next=${encodeURIComponent(next)}` as Route);
   }
   return session;
 }

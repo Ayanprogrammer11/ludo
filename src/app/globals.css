@@ -327,6 +327,48 @@ footer { min-height: 100px; display: flex; justify-content: space-between; align
 }
 .loading-lines span:last-child { width: 72%; }
 @keyframes loading-sheen { to { background-position: -220% 0; } }
+.status-page {
+  min-height: 100vh;
+  padding: 76px 16px;
+  display: grid;
+  place-items: center;
+}
+.status-panel {
+  width: min(560px, 100%);
+  padding: clamp(26px, 5vw, 48px);
+  display: grid;
+  gap: 20px;
+  color: #f9f4ea;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(229, 86, 67, .28), transparent 36%),
+    linear-gradient(145deg, #292a25, #1f211e);
+  box-shadow: 0 24px 80px rgba(42,37,27,.18);
+}
+.status-panel > svg { color: var(--red); }
+.status-panel h1 {
+  margin: 0;
+  font: 600 clamp(34px, 5vw, 56px)/.98 var(--font-display), serif;
+  letter-spacing: -.04em;
+}
+.status-panel p {
+  max-width: 44ch;
+  margin: 12px 0 0;
+  color: rgba(255,255,255,.62);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.status-actions .primary-action,
+.status-actions .secondary-action {
+  min-width: 132px;
+  text-decoration: none;
+}
 .link-hint {
   width: .62em;
   height: .62em;
