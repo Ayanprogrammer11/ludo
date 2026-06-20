@@ -30,15 +30,15 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^22.19.21",
+    "@types/node": "^26.0.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "babel-plugin-react-compiler": "^1.0.0",
-    "eslint": "^9",
+    "eslint": "^10",
     "eslint-config-next": "^16.2.9",
     "tailwindcss": "^4",
-    "typescript": "^5",
-    "vitest": "^4.1.8"
+    "typescript": "^6",
+    "vitest": "^4.1.9"
   },
   "overrides": {
     "esbuild": "0.28.1",
