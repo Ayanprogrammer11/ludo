@@ -112,6 +112,18 @@ describe("RoomService", () => {
     expect(snapshot.game?.events[0].message).toContain("timed out");
   });
 
+  it("does not reset the active turn clock when its player reconnects", () => {
+    const service = new RoomService();
+    const host = service.createRoom(account("Ada"), "socket-a", 1);
+    service.joinRoom(host.identity.roomCode, account("Linus"), "socket-b", 2);
+    service.startGame(host.identity.roomCode, host.identity.playerId, "socket-a", crypto.randomUUID(), 3);
+    const disconnected = service.disconnectSocket("socket-a", 100);
+    const resumed = service.resumeRoom(host.identity.roomCode, host.identity.reconnectToken, account("Ada"), "socket-c", 200);
+
+    expect(disconnected?.turnDeadline).toBe(30_100);
+    expect(resumed.snapshot.turnDeadline).toBe(30_100);
+  });
+
   it("removes a waiting player who explicitly leaves", () => {
     const service = new RoomService();
     const host = service.createRoom(account("Ada"), "socket-a", 1);
@@ -138,6 +150,20 @@ describe("RoomService", () => {
     expect(match?.winnerUserId).toBe("account-ada");
     expect(match?.replay.frames.length).toBeGreaterThanOrEqual(2);
     expect(match?.replay.frames.at(-1)?.label).toContain("wins by forfeit");
+  });
+
+  it("preserves the current player's clock when a different player leaves", () => {
+    const service = new RoomService();
+    const host = service.createRoom(account("Ada"), "socket-a", 1);
+    const guest = service.joinRoom(host.identity.roomCode, account("Linus"), "socket-b", 2);
+    service.joinRoom(host.identity.roomCode, account("Grace"), "socket-c", 3);
+    const started = service.startGame(host.identity.roomCode, host.identity.playerId, "socket-a", crypto.randomUUID(), 4);
+
+    const snapshot = service.leaveRoom(host.identity.roomCode, guest.identity.playerId, "socket-b", crypto.randomUUID(), 1_000);
+
+    expect(snapshot?.status).toBe("playing");
+    expect(snapshot?.game?.currentPlayerId).toBe(host.identity.playerId);
+    expect(snapshot?.turnDeadline).toBe(started.turnDeadline);
   });
 
   it("automatically forfeits a player after repeated missed turns", () => {

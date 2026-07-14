@@ -1,7 +1,7 @@
 "use client";
 
 import { RotateCcw, Sparkles, Trophy } from "lucide-react";
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { legalTokenIds, moveToken, rollDie, skipTurn } from "@/lib/game/engine";
 import type { GameState, PlayerColor } from "@/lib/game/types";
 import { Die } from "./die";
@@ -25,24 +25,36 @@ function formatTimer(ms: number) {
 export function LocalGame({ initialState }: { initialState: GameState }) {
   const [timedState, setTimedState] = useState(() => ({
     game: initialState,
-    turnDeadline: TURN_DURATION_MS,
+    turnDeadline: 0,
   }));
   const [now, setNow] = useState(0);
+  const [piecesMoving, setPiecesMoving] = useState(false);
   const [isRolling, startRolling] = useTransition();
   const state = timedState.game;
   const turnDeadline = timedState.turnDeadline;
   const legalIds = useMemo(() => legalTokenIds(state), [state]);
   const currentPlayer = state.players.find((player) => player.id === state.currentPlayerId)!;
   const winner = state.players.find((player) => player.id === state.winnerId);
-  const remainingMs = winner ? 0 : turnDeadline - now;
+  const remainingMs = winner ? 0 : turnDeadline ? turnDeadline - now : TURN_DURATION_MS;
 
   useEffect(() => {
-    const interval = window.setInterval(() => setNow(performance.now()), 250);
+    const interval = window.setInterval(() => setNow(performance.now()), 1_000);
     return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {
     if (winner) return undefined;
+    if (!turnDeadline) {
+      const initializeTimer = window.setTimeout(() => {
+        const startedAt = performance.now();
+        setNow(startedAt);
+        setTimedState((current) => current.turnDeadline ? current : {
+          ...current,
+          turnDeadline: startedAt + TURN_DURATION_MS,
+        });
+      }, 0);
+      return () => window.clearTimeout(initializeTimer);
+    }
     const timeout = window.setTimeout(() => {
       setTimedState((current) => {
         if (current.game.phase === "finished" || current.game.winnerId) return current;
@@ -65,11 +77,20 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
   }
 
   function restart() {
+    setPiecesMoving(false);
     setTimedState({
       game: initialState,
       turnDeadline: performance.now() + TURN_DURATION_MS,
     });
   }
+
+  const handleMove = useCallback((id: string) => {
+    setPiecesMoving(true);
+    setTimedState((current) => ({
+      game: moveToken(current.game, id).state,
+      turnDeadline: performance.now() + TURN_DURATION_MS,
+    }));
+  }, []);
 
   return (
     <section className="game-table" aria-label="Local Ludo match">
@@ -79,7 +100,7 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
           <span className={`player-dot ${colorClass[currentPlayer.color]}`} />
           <span><small>Turn {state.turnNumber}</small>{currentPlayer.name}</span>
         </div>
-        <button type="button" className="icon-button" onClick={restart} aria-label="Restart match"><RotateCcw size={18} /></button>
+        <button type="button" className="icon-button" onClick={restart} disabled={piecesMoving} aria-label="Restart match"><RotateCcw size={18} /></button>
       </div>
 
       <div className="game-layout">
@@ -88,23 +109,23 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
             state={state}
             legalIds={legalIds}
             activeColor={currentPlayer.color}
-            onMove={(id) => setTimedState((current) => ({
-              game: moveToken(current.game, id).state,
-              turnDeadline: performance.now() + TURN_DURATION_MS,
-            }))}
+            interactionLocked={piecesMoving}
+            onAnimationStateChange={setPiecesMoving}
+            onMove={handleMove}
           />
-          <div className="mobile-controls"><TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} remainingMs={remainingMs} onRoll={handleRoll} /></div>
+          <div className="mobile-controls"><TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} piecesMoving={piecesMoving} remainingMs={remainingMs} onRoll={handleRoll} /></div>
         </div>
         <aside className="game-panel">
-          <TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} remainingMs={remainingMs} onRoll={handleRoll} />
+          <TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} piecesMoving={piecesMoving} remainingMs={remainingMs} onRoll={handleRoll} />
           <div className="players-list">
             <div className="panel-heading"><span>Players</span><small>{state.players.length}/4</small></div>
             {state.players.map((player) => {
               const finished = state.tokens.filter((token) => token.color === player.color && token.progress === 57).length;
+              const active = state.tokens.filter((token) => token.color === player.color && token.progress >= 0 && token.progress < 57).length;
               return (
                 <div className={`player-row ${player.id === currentPlayer.id ? "is-active" : ""}`} key={player.id}>
                   <span className={`avatar ${colorClass[player.color]}`}>{player.name.charAt(0)}</span>
-                  <span className="player-name"><strong>{player.name}</strong><small>{finished === 4 ? "Finished" : `${finished}/4 home`}</small></span>
+                  <span className="player-name"><strong>{player.name}</strong><small>{finished === 4 ? "Finished" : `${finished}/4 home · ${active} in play`}</small></span>
                   <span className="token-mini-row" aria-hidden="true">
                     {Array.from({ length: 4 }, (_, index) => <i key={index} className={index < finished ? colorClass[player.color] : ""} />)}
                   </span>
@@ -122,11 +143,12 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
   );
 }
 
-function TurnControls({ state, currentPlayer, winner, isRolling, remainingMs, onRoll }: {
+function TurnControls({ state, currentPlayer, winner, isRolling, piecesMoving, remainingMs, onRoll }: {
   state: GameState;
   currentPlayer: GameState["players"][number];
   winner: GameState["players"][number] | undefined;
   isRolling: boolean;
+  piecesMoving: boolean;
   remainingMs: number;
   onRoll: () => void;
 }) {
@@ -135,9 +157,9 @@ function TurnControls({ state, currentPlayer, winner, isRolling, remainingMs, on
   }
   return (
     <div className={`turn-card ${colorClass[currentPlayer.color]}`}>
-      <div className="turn-copy"><span>{currentPlayer.name}&apos;s move</span><strong>{state.phase === "awaiting_roll" ? "Roll the die" : "Choose a glowing token"}</strong></div>
+      <div className="turn-copy"><span>{currentPlayer.name}&apos;s move</span><strong>{piecesMoving ? "Moving piece…" : state.phase === "awaiting_roll" ? "Roll the die" : "Choose a highlighted piece"}</strong></div>
       <div className="turn-timer" aria-label={`Turn timer ${formatTimer(remainingMs)} remaining`}><span>{formatTimer(remainingMs)}</span><small>left</small></div>
-      <button type="button" className="roll-button" onClick={onRoll} disabled={state.phase !== "awaiting_roll" || isRolling}>
+      <button type="button" className="roll-button" onClick={onRoll} disabled={state.phase !== "awaiting_roll" || isRolling || piecesMoving}>
         <Die value={state.lastRoll ?? 6} rolling={isRolling} />
         <span>{state.phase === "awaiting_roll" ? "Roll" : `Rolled ${state.dieValue}`}</span>
       </button>

@@ -13,7 +13,9 @@ import {
   type Token,
 } from "./types";
 
-const FINISH_PROGRESS = 57;
+export const TRACK_END_PROGRESS = 51;
+export const HOME_START_PROGRESS = 52;
+export const FINISH_PROGRESS = 57;
 
 function event(
   state: GameState,
@@ -83,19 +85,25 @@ export function canMoveToken(state: GameState, token: Token, die: number): boole
   if (token.progress === -1 && die !== 6) return false;
   if (destination > FINISH_PROGRESS) return false;
 
-  if (destination <= 51) {
+  if (destination <= TRACK_END_PROGRESS) {
     const destinationIndex = (START_INDEX[token.color] + destination) % 52;
     if (isOpponentBlockade(state, destinationIndex, token.color)) {
       return false;
     }
+  }
 
-    const stepsOnTrack = token.progress === -1 ? [destinationIndex] : Array.from(
-      { length: Math.min(die, 51 - token.progress) },
+  // A move that ends in the home lane still has to clear every outer-track
+  // square along the way. Previously this check only ran when the destination
+  // itself was on the outer track, which allowed a token to jump a blockade at
+  // progress 51 as it turned into its home lane.
+  const trackSteps = token.progress === -1
+    ? [START_INDEX[token.color]]
+    : Array.from(
+      { length: Math.max(0, Math.min(die, TRACK_END_PROGRESS - token.progress)) },
       (_, offset) => (START_INDEX[token.color] + token.progress + offset + 1) % 52,
     );
-    if (stepsOnTrack.some((index) => isOpponentBlockade(state, index, token.color))) {
-      return false;
-    }
+  if (trackSteps.some((index) => isOpponentBlockade(state, index, token.color))) {
+    return false;
   }
 
   return true;
@@ -236,14 +244,18 @@ export function forfeitPlayer(state: GameState, playerId: string, reason?: strin
     };
   }
 
+  if (state.currentPlayerId !== playerId) {
+    return { ...state, players, events: withEvent };
+  }
+
   return {
     ...state,
     players,
-    currentPlayerId: state.currentPlayerId === playerId ? nextPlayerId({ ...state, players }) : state.currentPlayerId,
+    currentPlayerId: nextPlayerId({ ...state, players }),
     phase: "awaiting_roll",
     dieValue: null,
     consecutiveSixes: 0,
-    turnNumber: state.currentPlayerId === playerId ? state.turnNumber + 1 : state.turnNumber,
+    turnNumber: state.turnNumber + 1,
     events: withEvent,
   };
 }
@@ -259,7 +271,7 @@ export function moveToken(state: GameState, tokenId: string): MoveResult {
   const player = activePlayer(state);
   const movingToken = state.tokens.find((token) => token.id === tokenId)!;
   const destination = movingToken.progress === -1 ? 0 : movingToken.progress + state.dieValue;
-  const destinationIndex = destination <= 51
+  const destinationIndex = destination <= TRACK_END_PROGRESS
     ? (START_INDEX[movingToken.color] + destination) % 52
     : null;
   const captured = destinationIndex !== null && !SAFE_TRACK_INDEXES.has(destinationIndex)

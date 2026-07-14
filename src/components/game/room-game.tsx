@@ -2,7 +2,7 @@
 
 import { Check, Copy, LoaderCircle, LogIn, LogOut, Play, Radio, Trophy, UserRound, WifiOff } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useCallback, useEffect, useState, useTransition } from "react";
 import { RouteLoading } from "@/components/loading/route-loading";
 import { legalTokenIds } from "@/lib/game/engine";
 import type { PlayerColor } from "@/lib/game/types";
@@ -41,6 +41,7 @@ export function RoomGame({ code, user }: { code: string; user: { displayName: st
   const [connection, setConnection] = useState<"connecting" | "connected" | "reconnecting" | "failed">("connecting");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [piecesMoving, setPiecesMoving] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [, startTransition] = useTransition();
   const [copied, setCopied] = useState(false);
@@ -105,7 +106,7 @@ export function RoomGame({ code, user }: { code: string; user: { displayName: st
   }, [code]);
 
   useEffect(() => {
-    const interval = window.setInterval(() => setNow(Date.now()), 250);
+    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(interval);
   }, []);
 
@@ -123,13 +124,23 @@ export function RoomGame({ code, user }: { code: string; user: { displayName: st
     setRoom(result.snapshot);
   }
 
-  async function command(event: "start_game" | "roll_die" | "move_token", extra: object = {}) {
+  const command = useCallback(async (event: "start_game" | "roll_die" | "move_token", extra: object = {}) => {
     setBusy(true);
     setError("");
     const result = await emitAck(event, { commandId: crypto.randomUUID(), ...extra });
     setBusy(false);
-    if (!result.ok) setError(result.error.message);
-  }
+    if (!result.ok) {
+      setError(result.error.message);
+      return false;
+    }
+    return true;
+  }, []);
+
+  const handleMove = useCallback(async (tokenId: string) => {
+    setPiecesMoving(true);
+    const succeeded = await command("move_token", { tokenId });
+    if (!succeeded) setPiecesMoving(false);
+  }, [command]);
 
   async function leaveRoom() {
     if (!identity) return;
@@ -220,7 +231,7 @@ export function RoomGame({ code, user }: { code: string; user: { displayName: st
   const current = game.players.find((player) => player.id === game.currentPlayerId)!;
   const winner = game.players.find((player) => player.id === game.winnerId);
   const myTurn = me?.id === current.id;
-  const legalIds = myTurn && game.phase === "awaiting_move" ? legalTokenIds(game) : [];
+  const legalIds = myTurn && game.phase === "awaiting_move" && !piecesMoving ? legalTokenIds(game) : [];
   const remainingMs = room.turnDeadline && now !== null ? room.turnDeadline - now : 0;
 
   return (
@@ -230,16 +241,16 @@ export function RoomGame({ code, user }: { code: string; user: { displayName: st
         <div className={`network-status ${connection === "connected" ? "online" : ""}`}>{connection === "connected" ? <Radio size={13} /> : <WifiOff size={13} />}{connection}</div>
         <div className="topbar-actions">
           <button className="icon-button" type="button" onClick={() => void copyCode()} aria-label="Copy invite code" title="Copy invite code">{copied ? <Check size={17} /> : <Copy size={17} />}</button>
-          <button className="icon-button" type="button" onClick={() => void leaveRoom()} disabled={busy || leaving} aria-label={leaving ? "Leaving room" : "Leave room"} title={leaving ? "Leaving room" : "Leave room"}>{leaving ? <LoaderCircle className="spin" size={17} /> : <LogOut size={17} />}</button>
+          <button className="icon-button" type="button" onClick={() => void leaveRoom()} disabled={busy || leaving || piecesMoving} aria-label={leaving ? "Leaving room" : "Leave room"} title={leaving ? "Leaving room" : "Leave room"}>{leaving ? <LoaderCircle className="spin" size={17} /> : <LogOut size={17} />}</button>
         </div>
       </div>
       <div className="game-layout">
         <div className="board-column">
-          <GameBoard state={game} legalIds={legalIds} activeColor={current.color} onMove={(tokenId) => void command("move_token", { tokenId })} />
-          <div className="mobile-controls"><OnlineTurnControl game={game} meId={identity.playerId} busy={busy} remainingMs={remainingMs} onRoll={() => void command("roll_die")} /></div>
+          <GameBoard state={game} legalIds={legalIds} activeColor={current.color} interactionLocked={piecesMoving} onAnimationStateChange={setPiecesMoving} onMove={(tokenId) => void handleMove(tokenId)} />
+          <div className="mobile-controls"><OnlineTurnControl game={game} meId={identity.playerId} busy={busy} piecesMoving={piecesMoving} remainingMs={remainingMs} onRoll={() => void command("roll_die")} /></div>
         </div>
         <aside className="game-panel">
-          <OnlineTurnControl game={game} meId={identity.playerId} busy={busy} remainingMs={remainingMs} onRoll={() => void command("roll_die")} />
+          <OnlineTurnControl game={game} meId={identity.playerId} busy={busy} piecesMoving={piecesMoving} remainingMs={remainingMs} onRoll={() => void command("roll_die")} />
           <div className="players-list">
             <div className="panel-heading"><span>Players</span><small>{room.players.filter((player) => player.connected).length}/{room.players.length} online</small></div>
             {game.players.map((player) => (
@@ -263,7 +274,7 @@ export function RoomGame({ code, user }: { code: string; user: { displayName: st
   );
 }
 
-function OnlineTurnControl({ game, meId, busy, remainingMs, onRoll }: { game: NonNullable<RoomSnapshot["game"]>; meId: string; busy: boolean; remainingMs: number; onRoll: () => void }) {
+function OnlineTurnControl({ game, meId, busy, piecesMoving, remainingMs, onRoll }: { game: NonNullable<RoomSnapshot["game"]>; meId: string; busy: boolean; piecesMoving: boolean; remainingMs: number; onRoll: () => void }) {
   const current = game.players.find((player) => player.id === game.currentPlayerId)!;
   const winner = game.players.find((player) => player.id === game.winnerId);
   const myTurn = current.id === meId;
@@ -278,9 +289,9 @@ function OnlineTurnControl({ game, meId, busy, remainingMs, onRoll }: { game: No
   }
   return (
     <div className={`turn-card ${colorClass[current.color]}`}>
-      <div className="turn-copy"><span>{myTurn ? "Your move" : `${current.name}'s move`}</span><strong>{myTurn ? game.phase === "awaiting_roll" ? "Roll the die" : "Choose a glowing token" : "Watching their turn"}</strong></div>
+      <div className="turn-copy"><span>{myTurn ? "Your move" : `${current.name}'s move`}</span><strong>{piecesMoving ? "Moving piece…" : myTurn ? game.phase === "awaiting_roll" ? "Roll the die" : "Choose a highlighted piece" : "Watching their turn"}</strong></div>
       <div className="turn-timer" aria-label={`Turn timer ${formatTimer(remainingMs)} remaining`}><span>{formatTimer(remainingMs)}</span><small>{timerLabel}</small></div>
-      <button type="button" className="roll-button" onClick={onRoll} disabled={!myTurn || game.phase !== "awaiting_roll" || busy}>
+      <button type="button" className="roll-button" onClick={onRoll} disabled={!myTurn || game.phase !== "awaiting_roll" || busy || piecesMoving}>
         <Die value={game.lastRoll ?? 6} rolling={busy && myTurn} /><span>{game.phase === "awaiting_roll" ? "Roll" : `Rolled ${game.dieValue}`}</span>
       </button>
     </div>
@@ -289,10 +300,11 @@ function OnlineTurnControl({ game, meId, busy, remainingMs, onRoll }: { game: No
 
 function OnlinePlayerRow({ game, player, roomPlayer, active }: { game: NonNullable<RoomSnapshot["game"]>; player: NonNullable<RoomSnapshot["game"]>["players"][number]; roomPlayer: RoomSnapshot["players"][number] | undefined; active: boolean }) {
   const finished = game.tokens.filter((token) => token.color === player.color && token.progress === 57).length;
+  const activePieces = game.tokens.filter((token) => token.color === player.color && token.progress >= 0 && token.progress < 57).length;
   const status = player.forfeited || roomPlayer?.leftAt
     ? "Left"
     : player.connected
-      ? `${finished}/4 home`
+      ? `${finished}/4 home · ${activePieces} in play`
       : `Reconnecting · ${roomPlayer?.missedTurns ?? 0}/${MAX_MISSED_TURNS} missed`;
   return (
     <div className={`player-row ${active ? "is-active" : ""} ${player.forfeited ? "is-left" : ""}`}>

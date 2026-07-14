@@ -146,7 +146,6 @@ export class RoomService {
     if (displacedSocketId && displacedSocketId !== socketId) this.socketIndex.delete(displacedSocketId);
     room.disconnectedAt.delete(playerId);
     this.syncGameConnections(room);
-    if (room.game?.currentPlayerId === playerId) room.turnDeadline = now + TURN_DURATION_MS;
     this.touch(room, now);
     return {
       identity: { roomCode: room.code, playerId, reconnectToken: nextReconnectToken },
@@ -248,10 +247,15 @@ export class RoomService {
     player.missedTurns = MAX_MISSED_TURNS;
     this.syncGameConnections(room);
     if (room.game && room.status === "playing") {
+      const wasCurrentPlayer = room.game.currentPlayerId === playerId;
       room.game = forfeitPlayer(room.game, playerId, `${player.name} left and forfeited the match`);
       this.syncGameConnections(room);
       room.status = room.game.winnerId ? "finished" : "playing";
-      room.turnDeadline = room.game.winnerId ? null : now + TURN_DURATION_MS;
+      room.turnDeadline = room.game.winnerId
+        ? null
+        : wasCurrentPlayer
+          ? now + TURN_DURATION_MS
+          : room.turnDeadline;
       this.recordReplayFrame(room, now, room.game.events[0]?.message ?? `${player.name} left`);
     }
 

@@ -16,6 +16,6 @@ describe("GameBoard", () => {
     );
 
     expect(html).toContain('class="token is-red is-legal"');
-    expect(html).toContain('aria-label="red token 4, legal move"');
+    expect(html).toContain('aria-label="Red piece 4, legal move"');
   });
 });

@@ -79,6 +79,58 @@ describe("Ludo rules engine", () => {
     expect(legalTokenIds(rollDie(game, 6))).not.toContain("red-0");
   });
 
+  it("cannot pass a blockade on the final track square while entering home", () => {
+    const game = createGame(["Ada", "Linus", "Grace", "Ken"]);
+    game.tokens.find((token) => token.id === "red-0")!.progress = 50;
+    game.tokens.find((token) => token.id === "blue-0")!.progress = 12;
+    game.tokens.find((token) => token.id === "blue-1")!.progress = 12;
+
+    expect(legalTokenIds(rollDie(game, 2))).not.toContain("red-0");
+  });
+
+  it("lets every color complete its circuit and enter its home lane", () => {
+    const game = createGame(["Ada", "Linus", "Grace", "Ken"]);
+
+    for (const player of game.players) {
+      const token = game.tokens.find((candidate) => candidate.color === player.color)!;
+      token.progress = 50;
+      game.currentPlayerId = player.id;
+      game.phase = "awaiting_roll";
+      game.dieValue = null;
+
+      const result = moveToken(rollDie(game, 2), token.id);
+      expect(result.state.tokens.find((candidate) => candidate.id === token.id)?.progress).toBe(52);
+    }
+  });
+
+  it("advances every color from its start square all the way home", () => {
+    let game = createGame(["Ada", "Linus", "Grace", "Ken"]);
+
+    for (const player of game.players) {
+      const tokenId = `${player.color}-0`;
+      game.tokens.find((token) => token.id === tokenId)!.progress = 0;
+
+      for (const die of [...Array<number>(11).fill(5), 2]) {
+        game.currentPlayerId = player.id;
+        game.phase = "awaiting_roll";
+        game.dieValue = null;
+        game = moveToken(rollDie(game, die), tokenId).state;
+      }
+
+      expect(game.tokens.find((token) => token.id === tokenId)?.progress).toBe(57);
+    }
+  });
+
+  it("preserves the active player's pending move when someone else forfeits", () => {
+    const rolled = rollDie(createGame(["Ada", "Linus", "Grace"]), 6);
+    const game = forfeitPlayer(rolled, "player-3", "Grace left");
+
+    expect(game.currentPlayerId).toBe("player-1");
+    expect(game.phase).toBe("awaiting_move");
+    expect(game.dieValue).toBe(6);
+    expect(legalTokenIds(game)).toHaveLength(4);
+  });
+
   it("lets the last yard token enter after rolling six even when own tokens occupy the start", () => {
     const game = createGame(["Ada", "Linus"]);
     game.tokens.find((token) => token.id === "red-0")!.progress = 0;
