@@ -1,6 +1,8 @@
 import { randomInt, randomUUID } from "node:crypto";
 import type { FinishedRoomMatch, MatchReplayFrame } from "../auth/types";
-import { createGameForPlayers, forfeitPlayer, moveToken, rollDie, skipTurn } from "../game/engine";
+import { createGameForPlayers, forfeitPlayer, moveToken, rollDice, skipTurn } from "../game/engine";
+import { DEFAULT_GAME_RULES, normalizeGameRules } from "../game/rules";
+import type { GameRules } from "../game/types";
 import { PLAYER_COLORS } from "../game/types";
 import type { RoomIdentity, RoomPlayer, RoomSnapshot } from "./types";
 
@@ -76,6 +78,7 @@ export class RoomService {
       status: "waiting",
       players: [player],
       hostPlayerId: playerId,
+      rules: DEFAULT_GAME_RULES,
       game: null,
       turnDeadline: null,
       version: 1,
@@ -182,10 +185,26 @@ export class RoomService {
     if (room.players.some((player) => !player.connected)) {
       throw new RoomError("PLAYER_OFFLINE", "Everyone must be connected before the match starts.");
     }
-    room.game = createGameForPlayers(room.players, `room-${room.code}`);
+    room.game = createGameForPlayers(room.players, `room-${room.code}`, room.rules);
     room.status = "playing";
     room.turnDeadline = now + TURN_DURATION_MS;
     this.recordReplayFrame(room, now, "Match started");
+    return this.commitCommand(room, commandId, now);
+  }
+
+  updateRules(
+    code: string,
+    playerId: string,
+    socketId: string,
+    commandId: string,
+    rules: GameRules,
+    now = Date.now(),
+  ): RoomSnapshot {
+    const room = this.authorize(code, playerId, socketId);
+    if (room.commandIds.has(commandId)) return this.snapshot(room);
+    if (room.hostPlayerId !== playerId) throw new RoomError("HOST_ONLY", "Only the host can change the rules.");
+    if (room.status !== "waiting") throw new RoomError("GAME_STARTED", "Rules are locked after the match starts.");
+    room.rules = normalizeGameRules(rules);
     return this.commitCommand(room, commandId, now);
   }
 
@@ -194,7 +213,10 @@ export class RoomService {
     if (room.commandIds.has(commandId)) return this.snapshot(room);
     const game = this.requirePlayableGame(room);
     if (game.currentPlayerId !== playerId) throw new RoomError("NOT_YOUR_TURN", "Wait for your turn.");
-    room.game = rollDie(game, randomInt(1, 7));
+    room.game = rollDice(
+      game,
+      Array.from({ length: room.rules.dicePerTurn }, () => randomInt(1, 7)),
+    );
     this.resetMissedTurns(room, playerId);
     if (room.game.winnerId) room.status = "finished";
     room.turnDeadline = room.game.winnerId ? null : now + TURN_DURATION_MS;
@@ -202,19 +224,24 @@ export class RoomService {
     return this.commitCommand(room, commandId, now);
   }
 
-  move(code: string, playerId: string, socketId: string, commandId: string, tokenId: string, now = Date.now()): RoomSnapshot {
+  move(code: string, playerId: string, socketId: string, commandId: string, tokenId: string, dieValue: number, now = Date.now()): RoomSnapshot {
     const room = this.authorize(code, playerId, socketId);
     if (room.commandIds.has(commandId)) return this.snapshot(room);
     const game = this.requirePlayableGame(room);
     if (game.currentPlayerId !== playerId) throw new RoomError("NOT_YOUR_TURN", "Wait for your turn.");
     try {
-      room.game = moveToken(game, tokenId).state;
+      room.game = moveToken(game, tokenId, dieValue).state;
     } catch (error) {
       throw new RoomError("ILLEGAL_MOVE", error instanceof Error ? error.message : "That move is not legal.");
     }
     this.resetMissedTurns(room, playerId);
     if (room.game.winnerId) room.status = "finished";
-    room.turnDeadline = room.game.winnerId ? null : now + TURN_DURATION_MS;
+    const batchFinished = room.game.currentPlayerId !== game.currentPlayerId || room.game.phase === "awaiting_roll";
+    room.turnDeadline = room.game.winnerId
+      ? null
+      : batchFinished
+        ? now + TURN_DURATION_MS
+        : room.turnDeadline;
     this.recordReplayFrame(room, now, room.game.events[0]?.message ?? "Token moved");
     return this.commitCommand(room, commandId, now);
   }
@@ -457,6 +484,7 @@ export class RoomService {
         joinedAt: player.joinedAt,
       })),
       hostPlayerId: room.hostPlayerId,
+      rules: room.rules,
       game: room.game,
       turnDeadline: room.turnDeadline,
       version: room.version,

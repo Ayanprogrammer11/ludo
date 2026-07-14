@@ -4,7 +4,8 @@ import { Check, Copy, LoaderCircle, LogIn, LogOut, Play, Radio, Trophy, UserRoun
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { RouteLoading } from "@/components/loading/route-loading";
-import { legalTokenIds } from "@/lib/game/engine";
+import { legalDiceIndexes, legalTokenIds } from "@/lib/game/engine";
+import type { GameRules } from "@/lib/game/types";
 import type { PlayerColor } from "@/lib/game/types";
 import {
   clearRoomIdentity,
@@ -14,8 +15,9 @@ import {
   saveRoomIdentity,
 } from "@/lib/realtime/client";
 import type { RoomIdentity, RoomSnapshot } from "@/lib/realtime/types";
-import { Die } from "./die";
+import { DiceControl } from "./dice-control";
 import { GameBoard } from "./game-board";
+import { RulePicker, RulesDisclosure } from "./rule-picker";
 
 const colorClass: Record<PlayerColor, string> = {
   red: "is-red",
@@ -45,6 +47,7 @@ export function RoomGame({ code, user }: { code: string; user: { displayName: st
   const [leaving, setLeaving] = useState(false);
   const [, startTransition] = useTransition();
   const [copied, setCopied] = useState(false);
+  const [selectedDieIndex, setSelectedDieIndex] = useState<number | null>(null);
 
   useEffect(() => {
     const socket = getRealtimeSocket();
@@ -124,7 +127,7 @@ export function RoomGame({ code, user }: { code: string; user: { displayName: st
     setRoom(result.snapshot);
   }
 
-  const command = useCallback(async (event: "start_game" | "roll_die" | "move_token", extra: object = {}) => {
+  const command = useCallback(async (event: "start_game" | "update_rules" | "roll_die" | "move_token", extra: object = {}) => {
     setBusy(true);
     setError("");
     const result = await emitAck(event, { commandId: crypto.randomUUID(), ...extra });
@@ -137,9 +140,23 @@ export function RoomGame({ code, user }: { code: string; user: { displayName: st
   }, []);
 
   const handleMove = useCallback(async (tokenId: string) => {
+    const game = room?.game;
+    const legalIndexes = game ? legalDiceIndexes(game) : [];
+    const effectiveIndex = selectedDieIndex !== null && legalIndexes.includes(selectedDieIndex)
+      ? selectedDieIndex
+      : legalIndexes[0];
+    const dieValue = effectiveIndex === undefined ? undefined : game?.pendingDice[effectiveIndex];
+    if (!dieValue) {
+      setError("Choose a die before moving a piece.");
+      return;
+    }
     setPiecesMoving(true);
-    const succeeded = await command("move_token", { tokenId });
+    const succeeded = await command("move_token", { tokenId, dieValue });
     if (!succeeded) setPiecesMoving(false);
+  }, [command, room?.game, selectedDieIndex]);
+
+  const updateRules = useCallback((rules: GameRules) => {
+    void command("update_rules", { rules });
   }, [command]);
 
   async function leaveRoom() {
@@ -196,18 +213,21 @@ export function RoomGame({ code, user }: { code: string; user: { displayName: st
           <button className="code-button" type="button" onClick={() => void copyCode()}>{copied ? <Check size={15} /> : <Copy size={15} />} {code}</button>
         </div>
         <div className="waiting-grid">
-          <div className="waiting-seats">
-            {Array.from({ length: 4 }, (_, index) => {
-              const player = room.players[index];
-              const color = (player?.color ?? ["red", "green", "yellow", "blue"][index]) as PlayerColor;
-              return player ? (
-                <div className="waiting-player" key={player.id}>
-                  <span className={`avatar ${colorClass[color]}`}>{player.name.charAt(0)}</span>
-                  <div><strong>{player.name}</strong><small>{player.isHost ? "Host" : "Ready"} · {player.connected ? "Online" : "Reconnecting"}</small></div>
-                  <i className={`connection-dot ${player.connected ? "online" : ""}`} />
-                </div>
-              ) : <div className="empty-seat" key={color}><span className={colorClass[color]} /><p>Waiting for player...</p></div>;
-            })}
+          <div className="waiting-main">
+            <div className="waiting-seats">
+              {Array.from({ length: 4 }, (_, index) => {
+                const player = room.players[index];
+                const color = (player?.color ?? ["red", "green", "yellow", "blue"][index]) as PlayerColor;
+                return player ? (
+                  <div className="waiting-player" key={player.id}>
+                    <span className={`avatar ${colorClass[color]}`}>{player.name.charAt(0)}</span>
+                    <div><strong>{player.name}</strong><small>{player.isHost ? "Host" : "Ready"} · {player.connected ? "Online" : "Reconnecting"}</small></div>
+                    <i className={`connection-dot ${player.connected ? "online" : ""}`} />
+                  </div>
+                ) : <div className="empty-seat" key={color}><span className={colorClass[color]} /><p>Waiting for player...</p></div>;
+              })}
+            </div>
+            <RulePicker rules={room.rules} isHost={Boolean(me?.isHost)} busy={busy} onChange={updateRules} />
           </div>
           <aside className="invite-card">
             <Radio size={22} />
@@ -231,7 +251,14 @@ export function RoomGame({ code, user }: { code: string; user: { displayName: st
   const current = game.players.find((player) => player.id === game.currentPlayerId)!;
   const winner = game.players.find((player) => player.id === game.winnerId);
   const myTurn = me?.id === current.id;
-  const legalIds = myTurn && game.phase === "awaiting_move" && !piecesMoving ? legalTokenIds(game) : [];
+  const legalDieIndexes = legalDiceIndexes(game);
+  const effectiveDieIndex = selectedDieIndex !== null && legalDieIndexes.includes(selectedDieIndex)
+    ? selectedDieIndex
+    : (legalDieIndexes[0] ?? null);
+  const selectedDie = effectiveDieIndex === null ? null : game.pendingDice[effectiveDieIndex] ?? null;
+  const legalIds = myTurn && game.phase === "awaiting_move" && !piecesMoving && selectedDie
+    ? legalTokenIds(game, selectedDie)
+    : [];
   const remainingMs = room.turnDeadline && now !== null ? room.turnDeadline - now : 0;
 
   return (
@@ -246,11 +273,14 @@ export function RoomGame({ code, user }: { code: string; user: { displayName: st
       </div>
       <div className="game-layout">
         <div className="board-column">
-          <GameBoard state={game} legalIds={legalIds} activeColor={current.color} interactionLocked={piecesMoving} onAnimationStateChange={setPiecesMoving} onMove={(tokenId) => void handleMove(tokenId)} />
-          <div className="mobile-controls"><OnlineTurnControl game={game} meId={identity.playerId} busy={busy} piecesMoving={piecesMoving} remainingMs={remainingMs} onRoll={() => void command("roll_die")} /></div>
+          <GameBoard state={game} legalIds={legalIds} activeColor={current.color} interactionLocked={piecesMoving} onAnimationStateChange={setPiecesMoving} onMove={handleMove} />
+          <div className="mobile-controls">
+            <OnlineTurnControl game={game} meId={identity.playerId} busy={busy} piecesMoving={piecesMoving} selectedDieIndex={effectiveDieIndex} onSelectDie={setSelectedDieIndex} remainingMs={remainingMs} onRoll={() => void command("roll_die")} />
+            <RulesDisclosure rules={game.rules} />
+          </div>
         </div>
         <aside className="game-panel">
-          <OnlineTurnControl game={game} meId={identity.playerId} busy={busy} piecesMoving={piecesMoving} remainingMs={remainingMs} onRoll={() => void command("roll_die")} />
+          <OnlineTurnControl game={game} meId={identity.playerId} busy={busy} piecesMoving={piecesMoving} selectedDieIndex={effectiveDieIndex} onSelectDie={setSelectedDieIndex} remainingMs={remainingMs} onRoll={() => void command("roll_die")} />
           <div className="players-list">
             <div className="panel-heading"><span>Players</span><small>{room.players.filter((player) => player.connected).length}/{room.players.length} online</small></div>
             {game.players.map((player) => (
@@ -263,6 +293,7 @@ export function RoomGame({ code, user }: { code: string; user: { displayName: st
               />
             ))}
           </div>
+          <RulesDisclosure rules={game.rules} />
           <div className="event-log" aria-live="polite">
             <div className="panel-heading"><span>Match feed</span><Radio size={13} /></div>
             {game.events.slice(0, 5).map((event) => <p key={event.id}><span className={`player-dot ${colorClass[event.color]}`} />{event.message}</p>)}
@@ -274,7 +305,16 @@ export function RoomGame({ code, user }: { code: string; user: { displayName: st
   );
 }
 
-function OnlineTurnControl({ game, meId, busy, piecesMoving, remainingMs, onRoll }: { game: NonNullable<RoomSnapshot["game"]>; meId: string; busy: boolean; piecesMoving: boolean; remainingMs: number; onRoll: () => void }) {
+function OnlineTurnControl({ game, meId, busy, piecesMoving, selectedDieIndex, onSelectDie, remainingMs, onRoll }: {
+  game: NonNullable<RoomSnapshot["game"]>;
+  meId: string;
+  busy: boolean;
+  piecesMoving: boolean;
+  selectedDieIndex: number | null;
+  onSelectDie: (index: number) => void;
+  remainingMs: number;
+  onRoll: () => void;
+}) {
   const current = game.players.find((player) => player.id === game.currentPlayerId)!;
   const winner = game.players.find((player) => player.id === game.winnerId);
   const myTurn = current.id === meId;
@@ -289,11 +329,9 @@ function OnlineTurnControl({ game, meId, busy, piecesMoving, remainingMs, onRoll
   }
   return (
     <div className={`turn-card ${colorClass[current.color]}`}>
-      <div className="turn-copy"><span>{myTurn ? "Your move" : `${current.name}'s move`}</span><strong>{piecesMoving ? "Moving piece…" : myTurn ? game.phase === "awaiting_roll" ? "Roll the die" : "Choose a highlighted piece" : "Watching their turn"}</strong></div>
+      <div className="turn-copy"><span>{myTurn ? "Your move" : `${current.name}'s move`}</span><strong>{piecesMoving ? "Moving piece…" : myTurn ? game.phase === "awaiting_roll" ? `Roll ${game.rules.dicePerTurn === 1 ? "the die" : `${game.rules.dicePerTurn} dice`}` : game.pendingDice.length > 1 ? "Choose a die, then a piece" : "Choose a highlighted piece" : "Watching their turn"}</strong></div>
       <div className="turn-timer" aria-label={`Turn timer ${formatTimer(remainingMs)} remaining`}><span>{formatTimer(remainingMs)}</span><small>{timerLabel}</small></div>
-      <button type="button" className="roll-button" onClick={onRoll} disabled={!myTurn || game.phase !== "awaiting_roll" || busy || piecesMoving}>
-        <Die value={game.lastRoll ?? 6} rolling={busy && myTurn} /><span>{game.phase === "awaiting_roll" ? "Roll" : `Rolled ${game.dieValue}`}</span>
-      </button>
+      <DiceControl game={game} selectedIndex={selectedDieIndex} disabled={!myTurn || busy || piecesMoving} rolling={busy && myTurn && game.phase === "awaiting_roll"} onSelect={onSelectDie} onRoll={onRoll} />
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { MatchReplayFrame, StoredMatch } from "@/lib/auth/types";
 import type { PlayerColor } from "@/lib/game/types";
 import { GameBoard } from "./game-board";
+import { RulesDisclosure } from "./rule-picker";
 
 const colorClass: Record<PlayerColor, string> = {
   red: "is-red",
@@ -73,6 +74,7 @@ export function MatchReplay({ match }: { match: StoredMatch }) {
       </div>
 
       <aside className="replay-panel">
+        <RulesDisclosure rules={frame.state.rules} />
         <div className="section-heading">
           <h2>Step {index + 1} of {frames.length}</h2>
           <p>{frame.label}</p>

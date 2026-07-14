@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createGame, forfeitPlayer, legalTokenIds, moveToken, rollDie } from "./engine";
+import { createGame, forfeitPlayer, legalTokenIds, moveToken, rollDice, rollDie } from "./engine";
+import { DEFAULT_GAME_RULES } from "./rules";
 
 describe("Ludo rules engine", () => {
   it("only lets a token leave its yard on a six", () => {
@@ -165,5 +166,174 @@ describe("Ludo rules engine", () => {
     game = moveToken(rollDie(game, 6), "red-0").state;
 
     expect(new Set(game.events.map((item) => item.id)).size).toBe(game.events.length);
+  });
+
+  it("can let a piece leave the yard on any roll", () => {
+    const game = createGame(["Ada", "Linus"], "open-entry", {
+      ...DEFAULT_GAME_RULES,
+      mustRollSixToEnter: false,
+      threeEntryAttempts: false,
+    });
+    const rolled = rollDie(game, 3);
+
+    expect(legalTokenIds(rolled)).toContain("red-0");
+    expect(moveToken(rolled, "red-0").state.tokens.find((token) => token.id === "red-0")?.progress).toBe(0);
+  });
+
+  it("can grant three attempts to roll an entry six", () => {
+    let game = createGame(["Ada", "Linus"], "three-tries", {
+      ...DEFAULT_GAME_RULES,
+      threeEntryAttempts: true,
+    });
+
+    game = rollDie(game, 2);
+    expect(game.currentPlayerId).toBe("player-1");
+    expect(game.entryAttempts).toBe(1);
+    game = rollDie(game, 4);
+    expect(game.currentPlayerId).toBe("player-1");
+    expect(game.entryAttempts).toBe(2);
+    game = rollDie(game, 3);
+    expect(game.currentPlayerId).toBe("player-2");
+    expect(game.entryAttempts).toBe(0);
+  });
+
+  it("can disable the bonus roll after a six", () => {
+    const game = createGame(["Ada", "Linus"], "no-six-bonus", {
+      ...DEFAULT_GAME_RULES,
+      bonusRollOnSix: false,
+      threeSixesLoseTurn: false,
+    });
+    const moved = moveToken(rollDie(game, 6), "red-0").state;
+
+    expect(moved.currentPlayerId).toBe("player-2");
+    expect(moved.phase).toBe("awaiting_roll");
+  });
+
+  it("can disable capture and home bonus rolls", () => {
+    let game = createGame(["Ada", "Linus"], "no-action-bonus", {
+      ...DEFAULT_GAME_RULES,
+      bonusRollOnCapture: false,
+      bonusRollOnHome: false,
+    });
+    game.tokens.find((token) => token.id === "red-0")!.progress = 13;
+    game.tokens.find((token) => token.id === "green-0")!.progress = 1;
+    game = moveToken(rollDie(game, 1), "red-0").state;
+    expect(game.currentPlayerId).toBe("player-2");
+
+    game.currentPlayerId = "player-1";
+    game.phase = "awaiting_roll";
+    game.tokens.find((token) => token.id === "red-0")!.progress = 56;
+    game = moveToken(rollDie(game, 1), "red-0").state;
+    expect(game.currentPlayerId).toBe("player-2");
+  });
+
+  it("can make marked safe squares capturable", () => {
+    const game = createGame(["Ada", "Linus"], "unsafe-board", {
+      ...DEFAULT_GAME_RULES,
+      safeSquares: false,
+    });
+    game.tokens.find((token) => token.id === "red-0")!.progress = 12;
+    game.tokens.find((token) => token.id === "green-0")!.progress = 0;
+
+    expect(moveToken(rollDie(game, 1), "red-0").capturedTokenIds).toEqual(["green-0"]);
+  });
+
+  it("can disable blockades", () => {
+    const game = createGame(["Ada", "Linus"], "open-track", {
+      ...DEFAULT_GAME_RULES,
+      blockades: false,
+    });
+    game.tokens.find((token) => token.id === "red-0")!.progress = 8;
+    game.tokens.find((token) => token.id === "green-0")!.progress = 51;
+    game.tokens.find((token) => token.id === "green-1")!.progress = 51;
+
+    expect(legalTokenIds(rollDie(game, 6))).toContain("red-0");
+  });
+
+  it("can require a capture before entering the home lane", () => {
+    let game = createGame(["Ada", "Linus"], "capture-gate", {
+      ...DEFAULT_GAME_RULES,
+      captureBeforeHome: true,
+    });
+    game.tokens.find((token) => token.id === "red-0")!.progress = 51;
+    expect(legalTokenIds(rollDie(game, 1))).not.toContain("red-0");
+
+    game.phase = "awaiting_roll";
+    game.dieValue = null;
+    game.pendingDice = [];
+    game.tokens.find((token) => token.id === "red-0")!.progress = 13;
+    game.tokens.find((token) => token.id === "green-0")!.progress = 1;
+    game = moveToken(rollDie(game, 1), "red-0").state;
+    game.tokens.find((token) => token.id === "red-0")!.progress = 51;
+    expect(game.players.find((player) => player.id === "player-1")?.hasCaptured).toBe(true);
+    expect(legalTokenIds(rollDie(game, 1))).toContain("red-0");
+  });
+
+  it("can accept an over-roll at the finish", () => {
+    const game = createGame(["Ada", "Linus"], "easy-finish", {
+      ...DEFAULT_GAME_RULES,
+      exactRollToFinish: false,
+    });
+    game.tokens.find((token) => token.id === "red-0")!.progress = 55;
+
+    expect(moveToken(rollDie(game, 5), "red-0").state.tokens.find((token) => token.id === "red-0")?.progress).toBe(57);
+  });
+
+  it("spends multiple dice in any order and queues the bonus until the tray is empty", () => {
+    let game = createGame(["Ada", "Linus"], "two-dice", {
+      ...DEFAULT_GAME_RULES,
+      dicePerTurn: 2,
+    });
+    game = rollDice(game, [6, 3]);
+
+    expect(game.pendingDice).toEqual([6, 3]);
+    expect(legalTokenIds(game, 3)).toEqual([]);
+    game = moveToken(game, "red-0", 6).state;
+    expect(game.pendingDice).toEqual([3]);
+    expect(game.phase).toBe("awaiting_move");
+    expect(legalTokenIds(game, 3)).toContain("red-0");
+    game = moveToken(game, "red-0", 3).state;
+    expect(game.tokens.find((token) => token.id === "red-0")?.progress).toBe(3);
+    expect(game.currentPlayerId).toBe("player-1");
+    expect(game.phase).toBe("awaiting_roll");
+  });
+
+  it("supports four dice and rejects the wrong tray size", () => {
+    const game = createGame(["Ada", "Linus"], "four-dice", {
+      ...DEFAULT_GAME_RULES,
+      dicePerTurn: 4,
+      mustRollSixToEnter: false,
+      threeEntryAttempts: false,
+    });
+
+    expect(() => rollDice(game, [1, 2])).toThrowError("This table rolls 4 dice per turn.");
+    expect(rollDice(game, [1, 2, 3, 4]).pendingDice).toEqual([1, 2, 3, 4]);
+  });
+
+  it("can spend different dice on different pieces", () => {
+    let game = createGame(["Ada", "Linus"], "split-dice", {
+      ...DEFAULT_GAME_RULES,
+      dicePerTurn: 2,
+    });
+    game.tokens.find((token) => token.id === "red-0")!.progress = 0;
+    game.tokens.find((token) => token.id === "red-1")!.progress = 0;
+    game = rollDice(game, [2, 3]);
+    game = moveToken(game, "red-1", 3).state;
+    game = moveToken(game, "red-0", 2).state;
+
+    expect(game.tokens.find((token) => token.id === "red-0")?.progress).toBe(2);
+    expect(game.tokens.find((token) => token.id === "red-1")?.progress).toBe(3);
+    expect(game.currentPlayerId).toBe("player-2");
+  });
+
+  it("applies the three-sixes penalty to a multi-dice tray", () => {
+    const game = createGame(["Ada", "Linus"], "triple-six", {
+      ...DEFAULT_GAME_RULES,
+      dicePerTurn: 3,
+    });
+    const rolled = rollDice(game, [6, 6, 6]);
+
+    expect(rolled.currentPlayerId).toBe("player-2");
+    expect(rolled.pendingDice).toEqual([]);
   });
 });

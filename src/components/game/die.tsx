@@ -7,9 +7,9 @@ const PIPS: Record<number, number[]> = {
   6: [0, 2, 3, 5, 6, 8],
 };
 
-export function Die({ value, rolling = false }: { value: number; rolling?: boolean }) {
+export function Die({ value, rolling = false, compact = false }: { value: number; rolling?: boolean; compact?: boolean }) {
   return (
-    <div className={`die ${rolling ? "die-rolling" : ""}`} aria-label={`Die showing ${value}`}>
+    <div className={`die ${compact ? "die-compact" : ""} ${rolling ? "die-rolling" : ""}`} aria-label={`Die showing ${value}`}>
       {Array.from({ length: 9 }, (_, index) => (
         <span key={index} className={PIPS[value].includes(index) ? "die-pip" : ""} />
       ))}

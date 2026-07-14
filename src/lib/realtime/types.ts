@@ -1,4 +1,4 @@
-import type { GameState, PlayerColor } from "../game/types";
+import type { GameRules, GameState, PlayerColor } from "../game/types";
 
 export type RoomStatus = "waiting" | "playing" | "finished";
 
@@ -18,6 +18,7 @@ export type RoomSnapshot = {
   status: RoomStatus;
   players: RoomPlayer[];
   hostPlayerId: string;
+  rules: GameRules;
   game: GameState | null;
   turnDeadline: number | null;
   version: number;

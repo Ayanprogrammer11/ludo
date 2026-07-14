@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createRoomSchema, displayNameSchema, joinRoomSchema } from "./schemas";
+import { createRoomSchema, displayNameSchema, gameRulesSchema, joinRoomSchema } from "./schemas";
+import { DEFAULT_GAME_RULES } from "../game/rules";
 
 describe("realtime input schemas", () => {
   it("rejects control characters in display names", () => {
@@ -13,5 +14,11 @@ describe("realtime input schemas", () => {
 
   it("rejects unexpected command fields", () => {
     expect(joinRoomSchema.safeParse({ code: "ABC234", name: "Ada", admin: true }).success).toBe(false);
+  });
+
+  it("accepts complete rule sets and rejects unsupported dice counts", () => {
+    expect(gameRulesSchema.safeParse(DEFAULT_GAME_RULES).success).toBe(true);
+    expect(gameRulesSchema.safeParse({ ...DEFAULT_GAME_RULES, dicePerTurn: 5 }).success).toBe(false);
+    expect(gameRulesSchema.safeParse({ dicePerTurn: 2 }).success).toBe(false);
   });
 });

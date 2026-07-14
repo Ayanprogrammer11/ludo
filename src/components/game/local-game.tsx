@@ -2,10 +2,11 @@
 
 import { RotateCcw, Sparkles, Trophy } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
-import { legalTokenIds, moveToken, rollDie, skipTurn } from "@/lib/game/engine";
+import { legalDiceIndexes, legalTokenIds, moveToken, rollDice, skipTurn } from "@/lib/game/engine";
 import type { GameState, PlayerColor } from "@/lib/game/types";
-import { Die } from "./die";
+import { DiceControl } from "./dice-control";
 import { GameBoard } from "./game-board";
+import { RulesDisclosure } from "./rule-picker";
 
 const colorClass: Record<PlayerColor, string> = {
   red: "is-red",
@@ -29,10 +30,16 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
   }));
   const [now, setNow] = useState(0);
   const [piecesMoving, setPiecesMoving] = useState(false);
+  const [selectedDieIndex, setSelectedDieIndex] = useState<number | null>(null);
   const [isRolling, startRolling] = useTransition();
   const state = timedState.game;
   const turnDeadline = timedState.turnDeadline;
-  const legalIds = useMemo(() => legalTokenIds(state), [state]);
+  const legalDieIndexes = legalDiceIndexes(state);
+  const effectiveDieIndex = selectedDieIndex !== null && legalDieIndexes.includes(selectedDieIndex)
+    ? selectedDieIndex
+    : (legalDieIndexes[0] ?? null);
+  const selectedDie = effectiveDieIndex === null ? null : state.pendingDice[effectiveDieIndex] ?? null;
+  const legalIds = useMemo(() => selectedDie ? legalTokenIds(state, selectedDie) : [], [selectedDie, state]);
   const currentPlayer = state.players.find((player) => player.id === state.currentPlayerId)!;
   const winner = state.players.find((player) => player.id === state.winnerId);
   const remainingMs = winner ? 0 : turnDeadline ? turnDeadline - now : TURN_DURATION_MS;
@@ -71,7 +78,7 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
   function handleRoll() {
     if (state.phase !== "awaiting_roll") return;
     startRolling(() => setTimedState((current) => ({
-      game: rollDie(current.game),
+      game: rollDice(current.game),
       turnDeadline: performance.now() + TURN_DURATION_MS,
     })));
   }
@@ -85,12 +92,17 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
   }
 
   const handleMove = useCallback((id: string) => {
+    if (!selectedDie) return;
     setPiecesMoving(true);
-    setTimedState((current) => ({
-      game: moveToken(current.game, id).state,
-      turnDeadline: performance.now() + TURN_DURATION_MS,
-    }));
-  }, []);
+    setTimedState((current) => {
+      const game = moveToken(current.game, id, selectedDie).state;
+      const batchFinished = game.currentPlayerId !== current.game.currentPlayerId || game.phase === "awaiting_roll";
+      return {
+        game,
+        turnDeadline: batchFinished ? performance.now() + TURN_DURATION_MS : current.turnDeadline,
+      };
+    });
+  }, [selectedDie]);
 
   return (
     <section className="game-table" aria-label="Local Ludo match">
@@ -113,10 +125,13 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
             onAnimationStateChange={setPiecesMoving}
             onMove={handleMove}
           />
-          <div className="mobile-controls"><TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} piecesMoving={piecesMoving} remainingMs={remainingMs} onRoll={handleRoll} /></div>
+          <div className="mobile-controls">
+            <TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} piecesMoving={piecesMoving} selectedDieIndex={effectiveDieIndex} onSelectDie={setSelectedDieIndex} remainingMs={remainingMs} onRoll={handleRoll} />
+            <RulesDisclosure rules={state.rules} />
+          </div>
         </div>
         <aside className="game-panel">
-          <TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} piecesMoving={piecesMoving} remainingMs={remainingMs} onRoll={handleRoll} />
+          <TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} piecesMoving={piecesMoving} selectedDieIndex={effectiveDieIndex} onSelectDie={setSelectedDieIndex} remainingMs={remainingMs} onRoll={handleRoll} />
           <div className="players-list">
             <div className="panel-heading"><span>Players</span><small>{state.players.length}/4</small></div>
             {state.players.map((player) => {
@@ -133,6 +148,7 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
               );
             })}
           </div>
+          <RulesDisclosure rules={state.rules} />
           <div className="event-log" aria-live="polite">
             <div className="panel-heading"><span>Match feed</span><Sparkles size={14} /></div>
             {state.events.slice(0, 4).map((item) => <p key={item.id}><span className={`player-dot ${colorClass[item.color]}`} />{item.message}</p>)}
@@ -143,12 +159,14 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
   );
 }
 
-function TurnControls({ state, currentPlayer, winner, isRolling, piecesMoving, remainingMs, onRoll }: {
+function TurnControls({ state, currentPlayer, winner, isRolling, piecesMoving, selectedDieIndex, onSelectDie, remainingMs, onRoll }: {
   state: GameState;
   currentPlayer: GameState["players"][number];
   winner: GameState["players"][number] | undefined;
   isRolling: boolean;
   piecesMoving: boolean;
+  selectedDieIndex: number | null;
+  onSelectDie: (index: number) => void;
   remainingMs: number;
   onRoll: () => void;
 }) {
@@ -157,12 +175,9 @@ function TurnControls({ state, currentPlayer, winner, isRolling, piecesMoving, r
   }
   return (
     <div className={`turn-card ${colorClass[currentPlayer.color]}`}>
-      <div className="turn-copy"><span>{currentPlayer.name}&apos;s move</span><strong>{piecesMoving ? "Moving piece…" : state.phase === "awaiting_roll" ? "Roll the die" : "Choose a highlighted piece"}</strong></div>
+      <div className="turn-copy"><span>{currentPlayer.name}&apos;s move</span><strong>{piecesMoving ? "Moving piece…" : state.phase === "awaiting_roll" ? `Roll ${state.rules.dicePerTurn === 1 ? "the die" : `${state.rules.dicePerTurn} dice`}` : state.pendingDice.length > 1 ? "Choose a die, then a piece" : "Choose a highlighted piece"}</strong></div>
       <div className="turn-timer" aria-label={`Turn timer ${formatTimer(remainingMs)} remaining`}><span>{formatTimer(remainingMs)}</span><small>left</small></div>
-      <button type="button" className="roll-button" onClick={onRoll} disabled={state.phase !== "awaiting_roll" || isRolling || piecesMoving}>
-        <Die value={state.lastRoll ?? 6} rolling={isRolling} />
-        <span>{state.phase === "awaiting_roll" ? "Roll" : `Rolled ${state.dieValue}`}</span>
-      </button>
+      <DiceControl game={state} selectedIndex={selectedDieIndex} disabled={piecesMoving} rolling={isRolling} onSelect={onSelectDie} onRoll={onRoll} />
     </div>
   );
 }

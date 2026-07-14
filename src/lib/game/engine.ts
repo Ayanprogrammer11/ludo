@@ -3,9 +3,11 @@ import {
   START_INDEX,
   globalTrackIndex,
 } from "./board";
+import { DEFAULT_GAME_RULES, normalizeGameRules } from "./rules";
 import {
   PLAYER_COLORS,
   type GameEvent,
+  type GameRules,
   type GameState,
   type MoveResult,
   type Player,
@@ -16,6 +18,10 @@ import {
 export const TRACK_END_PROGRESS = 51;
 export const HOME_START_PROGRESS = 52;
 export const FINISH_PROGRESS = 57;
+
+function rulesFor(state: GameState): GameRules {
+  return state.rules ?? DEFAULT_GAME_RULES;
+}
 
 function event(
   state: GameState,
@@ -54,7 +60,10 @@ function endTurn(state: GameState, message?: string): GameState {
     currentPlayerId: nextPlayerId(state),
     phase: "awaiting_roll",
     dieValue: null,
+    pendingDice: [],
+    bonusRollPending: false,
     consecutiveSixes: 0,
+    entryAttempts: 0,
     turnNumber: state.turnNumber + 1,
     events: message ? event(state, message, player.color, "turn") : state.events,
   };
@@ -77,46 +86,63 @@ function isOpponentBlockade(
   return [...counts.values()].some((count) => count >= 2);
 }
 
+function destinationFor(state: GameState, token: Token, die: number): number {
+  if (token.progress === -1) return 0;
+  const destination = token.progress + die;
+  return !rulesFor(state).exactRollToFinish && destination > FINISH_PROGRESS
+    ? FINISH_PROGRESS
+    : destination;
+}
+
 export function canMoveToken(state: GameState, token: Token, die: number): boolean {
   const player = activePlayer(state);
+  const rules = rulesFor(state);
   if (token.color !== player.color || token.progress === FINISH_PROGRESS) return false;
+  if (token.progress === -1 && rules.mustRollSixToEnter && die !== 6) return false;
 
-  const destination = token.progress === -1 ? 0 : token.progress + die;
-  if (token.progress === -1 && die !== 6) return false;
+  const destination = destinationFor(state, token, die);
   if (destination > FINISH_PROGRESS) return false;
+  if (
+    rules.captureBeforeHome
+    && !player.hasCaptured
+    && token.progress <= TRACK_END_PROGRESS
+    && destination >= HOME_START_PROGRESS
+  ) return false;
+
+  if (!rules.blockades) return true;
 
   if (destination <= TRACK_END_PROGRESS) {
     const destinationIndex = (START_INDEX[token.color] + destination) % 52;
-    if (isOpponentBlockade(state, destinationIndex, token.color)) {
-      return false;
-    }
+    if (isOpponentBlockade(state, destinationIndex, token.color)) return false;
   }
 
-  // A move that ends in the home lane still has to clear every outer-track
-  // square along the way. Previously this check only ran when the destination
-  // itself was on the outer track, which allowed a token to jump a blockade at
-  // progress 51 as it turned into its home lane.
   const trackSteps = token.progress === -1
     ? [START_INDEX[token.color]]
     : Array.from(
       { length: Math.max(0, Math.min(die, TRACK_END_PROGRESS - token.progress)) },
       (_, offset) => (START_INDEX[token.color] + token.progress + offset + 1) % 52,
     );
-  if (trackSteps.some((index) => isOpponentBlockade(state, index, token.color))) {
-    return false;
-  }
-
-  return true;
+  return !trackSteps.some((index) => isOpponentBlockade(state, index, token.color));
 }
 
-export function legalTokenIds(state: GameState, die = state.dieValue): string[] {
+export function legalTokenIds(state: GameState, die = state.dieValue ?? state.pendingDice?.[0] ?? null): string[] {
   if (!die) return [];
   return state.tokens
     .filter((token) => canMoveToken(state, token, die))
     .map((token) => token.id);
 }
 
-export function createGame(names: string[], id = crypto.randomUUID()): GameState {
+export function legalDiceIndexes(state: GameState): number[] {
+  return (state.pendingDice ?? []).flatMap((die, index) =>
+    legalTokenIds(state, die).length > 0 ? [index] : [],
+  );
+}
+
+export function createGame(
+  names: string[],
+  id = crypto.randomUUID(),
+  rules: GameRules = DEFAULT_GAME_RULES,
+): GameState {
   return createGameForPlayers(
     names.map((name, index) => ({
       id: `player-${index + 1}`,
@@ -124,12 +150,14 @@ export function createGame(names: string[], id = crypto.randomUUID()): GameState
       connected: true,
     })),
     id,
+    rules,
   );
 }
 
 export function createGameForPlayers(
   input: Array<Pick<Player, "id" | "name"> & Partial<Pick<Player, "connected">>>,
   id = crypto.randomUUID(),
+  rules: GameRules = DEFAULT_GAME_RULES,
 ): GameState {
   if (input.length < 2 || input.length > 4) {
     throw new Error("Ludo needs between two and four players.");
@@ -141,6 +169,7 @@ export function createGameForPlayers(
     color: PLAYER_COLORS[index],
     connected: player.connected ?? true,
     forfeited: false,
+    hasCaptured: false,
   }));
   const tokens = players.flatMap((player) =>
     Array.from({ length: 4 }, (_, index) => ({
@@ -159,9 +188,14 @@ export function createGameForPlayers(
     phase: "awaiting_roll",
     dieValue: null,
     lastRoll: null,
+    lastRolls: [],
+    pendingDice: [],
+    bonusRollPending: false,
     consecutiveSixes: 0,
+    entryAttempts: 0,
     turnNumber: 1,
     winnerId: null,
+    rules: normalizeGameRules(rules),
     events: [{
       id: "game-start",
       message: `${players[0].name} goes first`,
@@ -171,41 +205,92 @@ export function createGameForPlayers(
   };
 }
 
-export function rollDie(state: GameState, value = Math.floor(Math.random() * 6) + 1): GameState {
+function rollLabel(values: number[]) {
+  if (values.length === 1) return `${values[0]}`;
+  return `${values.slice(0, -1).join(", ")} and ${values.at(-1)}`;
+}
+
+export function rollDice(
+  state: GameState,
+  values = Array.from({ length: rulesFor(state).dicePerTurn }, () => Math.floor(Math.random() * 6) + 1),
+): GameState {
   if (state.phase !== "awaiting_roll" || state.winnerId) {
-    throw new Error("The die cannot be rolled right now.");
+    throw new Error("The dice cannot be rolled right now.");
   }
-  if (!Number.isInteger(value) || value < 1 || value > 6) {
-    throw new Error("A die roll must be an integer from one to six.");
+  const rules = rulesFor(state);
+  if (values.length !== rules.dicePerTurn) {
+    throw new Error(`This table rolls ${rules.dicePerTurn} ${rules.dicePerTurn === 1 ? "die" : "dice"} per turn.`);
+  }
+  if (values.some((value) => !Number.isInteger(value) || value < 1 || value > 6)) {
+    throw new Error("Every die roll must be an integer from one to six.");
   }
 
   const player = activePlayer(state);
-  const consecutiveSixes = value === 6 ? state.consecutiveSixes + 1 : 0;
+  let consecutiveSixes = state.consecutiveSixes;
+  let threeSixesRolled = false;
+  for (const value of values) {
+    consecutiveSixes = value === 6 ? consecutiveSixes + 1 : 0;
+    if (rules.threeSixesLoseTurn && consecutiveSixes >= 3) threeSixesRolled = true;
+  }
   const rolled: GameState = {
     ...state,
-    dieValue: value,
-    lastRoll: value,
+    dieValue: values.length === 1 ? values[0] : null,
+    lastRoll: values[0],
+    lastRolls: [...values],
+    pendingDice: [...values],
+    bonusRollPending: false,
     consecutiveSixes,
-    events: event(state, `${player.name} rolled ${value}`, player.color, "roll"),
+    events: event(state, `${player.name} rolled ${rollLabel(values)}`, player.color, "roll"),
   };
 
-  if (consecutiveSixes === 3) {
-    return endTurn(rolled, `${player.name} rolled three sixes and lost the turn`);
+  if (threeSixesRolled) {
+    return endTurn(rolled, `${player.name} rolled three consecutive sixes and lost the turn`);
   }
 
-  if (legalTokenIds(rolled, value).length === 0) {
-    if (value === 6) {
+  if (!values.some((die) => legalTokenIds(rolled, die).length > 0)) {
+    if (rules.bonusRollOnSix && values.includes(6)) {
       return {
         ...rolled,
         phase: "awaiting_roll",
         dieValue: null,
+        pendingDice: [],
         events: event(rolled, `${player.name} has no legal move and rolls again`, player.color, "turn"),
+      };
+    }
+
+    const hasNoPieceInPlay = rolled.tokens
+      .filter((token) => token.color === player.color)
+      .every((token) => token.progress === -1 || token.progress === FINISH_PROGRESS);
+    const entryAttempts = state.entryAttempts ?? 0;
+    if (
+      rules.mustRollSixToEnter
+      && rules.threeEntryAttempts
+      && hasNoPieceInPlay
+      && !values.includes(6)
+      && entryAttempts < 2
+    ) {
+      return {
+        ...rolled,
+        phase: "awaiting_roll",
+        dieValue: null,
+        pendingDice: [],
+        entryAttempts: entryAttempts + 1,
+        events: event(
+          rolled,
+          `${player.name} can try again (${entryAttempts + 2} of 3)`,
+          player.color,
+          "turn",
+        ),
       };
     }
     return endTurn(rolled, `${player.name} has no legal move`);
   }
 
   return { ...rolled, phase: "awaiting_move" };
+}
+
+export function rollDie(state: GameState, value = Math.floor(Math.random() * 6) + 1): GameState {
+  return rollDice(state, [value]);
 }
 
 export function skipTurn(state: GameState, reason?: string): GameState {
@@ -239,6 +324,8 @@ export function forfeitPlayer(state: GameState, playerId: string, reason?: strin
       currentPlayerId: winner.id,
       phase: "finished",
       dieValue: null,
+      pendingDice: [],
+      bonusRollPending: false,
       winnerId: winner.id,
       events: event({ ...state, players, events: withEvent }, `${winner.name} wins by forfeit`, winner.color, "finish"),
     };
@@ -254,27 +341,43 @@ export function forfeitPlayer(state: GameState, playerId: string, reason?: strin
     currentPlayerId: nextPlayerId({ ...state, players }),
     phase: "awaiting_roll",
     dieValue: null,
+    pendingDice: [],
+    bonusRollPending: false,
     consecutiveSixes: 0,
+    entryAttempts: 0,
     turnNumber: state.turnNumber + 1,
     events: withEvent,
   };
 }
 
-export function moveToken(state: GameState, tokenId: string): MoveResult {
-  if (state.phase !== "awaiting_move" || !state.dieValue || state.winnerId) {
+function removeDie(dice: number[], value: number): number[] {
+  const index = dice.indexOf(value);
+  return index < 0 ? dice : [...dice.slice(0, index), ...dice.slice(index + 1)];
+}
+
+export function moveToken(state: GameState, tokenId: string, requestedDie?: number): MoveResult {
+  const pendingDice = state.pendingDice?.length
+    ? state.pendingDice
+    : state.dieValue
+      ? [state.dieValue]
+      : [];
+  const die = requestedDie ?? (pendingDice.length === 1 ? pendingDice[0] : state.dieValue);
+  if (state.phase !== "awaiting_move" || !die || state.winnerId) {
     throw new Error("A token cannot be moved right now.");
   }
-  if (!legalTokenIds(state).includes(tokenId)) {
-    throw new Error("That token cannot make this move.");
+  if (!pendingDice.includes(die)) throw new Error("That die has already been used.");
+  if (!legalTokenIds(state, die).includes(tokenId)) {
+    throw new Error("That token cannot use the selected die.");
   }
 
+  const rules = rulesFor(state);
   const player = activePlayer(state);
   const movingToken = state.tokens.find((token) => token.id === tokenId)!;
-  const destination = movingToken.progress === -1 ? 0 : movingToken.progress + state.dieValue;
+  const destination = destinationFor(state, movingToken, die);
   const destinationIndex = destination <= TRACK_END_PROGRESS
     ? (START_INDEX[movingToken.color] + destination) % 52
     : null;
-  const captured = destinationIndex !== null && !SAFE_TRACK_INDEXES.has(destinationIndex)
+  const captured = destinationIndex !== null && (!rules.safeSquares || !SAFE_TRACK_INDEXES.has(destinationIndex))
     ? tokensAtTrackIndex(state, destinationIndex).filter((token) => token.color !== movingToken.color)
     : [];
   const finished = destination === FINISH_PROGRESS;
@@ -284,31 +387,58 @@ export function moveToken(state: GameState, tokenId: string): MoveResult {
     if (captured.some((candidate) => candidate.id === token.id)) return { ...token, progress: -1 };
     return token;
   });
-
+  const players = captured.length > 0
+    ? state.players.map((candidate) => candidate.id === player.id ? { ...candidate, hasCaptured: true } : candidate)
+    : state.players;
   const hasWon = tokens
     .filter((token) => token.color === player.color)
     .every((token) => token.progress === FINISH_PROGRESS);
-  const bonusTurn = !hasWon && (state.dieValue === 6 || captured.length > 0 || finished);
+  const earnedBonus = !hasWon && (
+    (die === 6 && rules.bonusRollOnSix)
+    || (captured.length > 0 && rules.bonusRollOnCapture)
+    || (finished && rules.bonusRollOnHome)
+  );
+  const bonusRollPending = Boolean(state.bonusRollPending || earnedBonus);
+  const remainingDice = removeDie(pendingDice, die);
   const action = captured.length > 0
-    ? `${player.name} captured a token`
+    ? `${player.name} captured ${captured.length === 1 ? "a piece" : `${captured.length} pieces`}`
     : finished
-      ? `${player.name} brought a token home`
-      : `${player.name} moved a token`;
+      ? `${player.name} brought a piece home`
+      : `${player.name} moved a piece`;
   let next: GameState = {
     ...state,
+    players,
     tokens,
-    phase: hasWon ? "finished" : bonusTurn ? "awaiting_roll" : "awaiting_move",
-    dieValue: null,
+    phase: hasWon ? "finished" : "awaiting_move",
+    dieValue: remainingDice.length === 1 ? remainingDice[0] : null,
+    pendingDice: remainingDice,
+    bonusRollPending,
+    entryAttempts: 0,
     winnerId: hasWon ? player.id : null,
     events: event(state, hasWon ? `${player.name} wins the game!` : action, player.color, hasWon ? "finish" : captured.length ? "capture" : "move"),
   };
 
-  if (!hasWon && !bonusTurn) next = endTurn(next);
+  if (!hasWon && !remainingDice.some((value) => legalTokenIds(next, value).length > 0)) {
+    next = bonusRollPending
+      ? {
+        ...next,
+        phase: "awaiting_roll",
+        dieValue: null,
+        pendingDice: [],
+        bonusRollPending: false,
+      }
+      : endTurn({
+        ...next,
+        dieValue: null,
+        pendingDice: [],
+        bonusRollPending: false,
+      });
+  }
 
   return {
     state: next,
     capturedTokenIds: captured.map((token) => token.id),
     finished,
-    bonusTurn,
+    bonusTurn: bonusRollPending,
   };
 }

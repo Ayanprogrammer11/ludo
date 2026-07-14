@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_GAME_RULES } from "../game/rules";
 import { RoomError, RoomService, type RoomAccount } from "./room-service";
 
 function account(displayName: string): RoomAccount {
@@ -76,6 +77,64 @@ describe("RoomService", () => {
 
     expect(repeated.version).toBe(first.version);
     expect(repeated).toEqual(first);
+  });
+
+  it("lets only the host configure rules before the match", () => {
+    const service = new RoomService();
+    const host = service.createRoom(account("Ada"), "socket-a", 1);
+    const guest = service.joinRoom(host.identity.roomCode, account("Linus"), "socket-b", 2);
+    const rules = {
+      ...DEFAULT_GAME_RULES,
+      dicePerTurn: 4 as const,
+      mustRollSixToEnter: false,
+      threeEntryAttempts: false,
+      threeSixesLoseTurn: false,
+    };
+
+    expect(() => service.updateRules(
+      host.identity.roomCode,
+      guest.identity.playerId,
+      "socket-b",
+      crypto.randomUUID(),
+      rules,
+      3,
+    )).toThrowError(RoomError);
+
+    const configured = service.updateRules(
+      host.identity.roomCode,
+      host.identity.playerId,
+      "socket-a",
+      crypto.randomUUID(),
+      rules,
+      4,
+    );
+    expect(configured.rules).toEqual(rules);
+
+    const started = service.startGame(host.identity.roomCode, host.identity.playerId, "socket-a", crypto.randomUUID(), 5);
+    expect(started.game?.rules).toEqual(rules);
+    const rolled = service.roll(host.identity.roomCode, host.identity.playerId, "socket-a", crypto.randomUUID(), 6);
+    expect(rolled.game?.lastRolls).toHaveLength(4);
+    const dieValue = rolled.game!.pendingDice[0];
+    const moved = service.move(
+      host.identity.roomCode,
+      host.identity.playerId,
+      "socket-a",
+      crypto.randomUUID(),
+      "red-0",
+      dieValue,
+      1_000,
+    );
+    expect(moved.game?.phase).toBe("awaiting_move");
+    expect(moved.turnDeadline).toBe(rolled.turnDeadline);
+
+    expect(() => service.updateRules(
+      host.identity.roomCode,
+      host.identity.playerId,
+      "socket-a",
+      crypto.randomUUID(),
+      DEFAULT_GAME_RULES,
+      7,
+    )).toThrowError(RoomError);
   });
 
   it("preserves a running match when a player disconnects", () => {

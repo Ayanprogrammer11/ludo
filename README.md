@@ -3,6 +3,10 @@
 A polished, server-authoritative multiplayer Ludo game built with Next.js 16.2,
 React 19, Tailwind CSS 4, Socket.IO, Cache Components, and Partial Prerendering.
 
+Hosts can choose a preset or customize the table's house rules before a match,
+including rolling one to four dice per turn. See [RULES.md](./RULES.md) for the
+researched variants and the exact behavior implemented by each option.
+
 ## Development
 
 ```bash

@@ -14,6 +14,7 @@ import {
   leaveRoomSchema,
   moveSchema,
   resumeRoomSchema,
+  updateRulesSchema,
 } from "./src/lib/realtime/schemas";
 import type { Ack, RoomIdentity, RoomSnapshot } from "./src/lib/realtime/types";
 
@@ -266,6 +267,17 @@ io.on("connection", (rawSocket) => {
     });
   });
 
+  socket.on("update_rules", (raw, ack: (result: Ack) => void) => {
+    guard(ack, () => {
+      enforceRateLimit(socket, commandLimiter);
+      const { commandId, rules } = updateRulesSchema.parse(raw);
+      const identity = requireIdentity(socket);
+      const snapshot = rooms.updateRules(identity.roomCode, identity.playerId, socket.id, commandId, rules);
+      emitSnapshot(snapshot);
+      return undefined;
+    });
+  });
+
   socket.on("roll_die", (raw, ack: (result: Ack) => void) => {
     guard(ack, () => {
       enforceRateLimit(socket, commandLimiter);
@@ -281,9 +293,9 @@ io.on("connection", (rawSocket) => {
   socket.on("move_token", (raw, ack: (result: Ack) => void) => {
     guard(ack, () => {
       enforceRateLimit(socket, commandLimiter);
-      const { commandId, tokenId } = moveSchema.parse(raw);
+      const { commandId, tokenId, dieValue } = moveSchema.parse(raw);
       const identity = requireIdentity(socket);
-      const snapshot = rooms.move(identity.roomCode, identity.playerId, socket.id, commandId, tokenId);
+      const snapshot = rooms.move(identity.roomCode, identity.playerId, socket.id, commandId, tokenId, dieValue);
       emitSnapshot(snapshot);
       void recordFinishedMatch(snapshot);
       return undefined;

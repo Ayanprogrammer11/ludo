@@ -240,10 +240,6 @@ export const GameBoard = memo(function GameBoard({
   interactionLocked = false,
   onAnimationStateChange,
 }: BoardProps) {
-  const onMoveRef = useRef(onMove);
-  useEffect(() => {
-    onMoveRef.current = onMove;
-  }, [onMove]);
   const { displayed, animating, movingTokenId, returningIds } = useAnimatedTokens(
     state.tokens,
     onAnimationStateChange,
@@ -283,7 +279,7 @@ export const GameBoard = memo(function GameBoard({
               moving={movingTokenId === token.id}
               returning={returningIds.has(token.id)}
               placement={placements.get(token.id)!}
-              onMove={(id) => onMoveRef.current(id)}
+              onMove={onMove}
             />
           ))}
         </div>
@@ -295,5 +291,6 @@ export const GameBoard = memo(function GameBoard({
   previous.state === next.state
   && previous.activeColor === next.activeColor
   && previous.interactionLocked === next.interactionLocked
+  && previous.onMove === next.onMove
   && sameIds(previous.legalIds, next.legalIds)
 ));
