@@ -86,12 +86,54 @@ function isOpponentBlockade(
   return [...counts.values()].some((count) => count >= 2);
 }
 
-function destinationFor(state: GameState, token: Token, die: number): number {
-  if (token.progress === -1) return 0;
-  const destination = token.progress + die;
-  return !rulesFor(state).exactRollToFinish && destination > FINISH_PROGRESS
-    ? FINISH_PROGRESS
-    : destination;
+type MovementPlan = {
+  progress: number;
+  laps: number;
+  trackIndexes: number[];
+};
+
+function movementPlan(state: GameState, token: Token, die: number): MovementPlan {
+  const laps = token.laps ?? 0;
+  if (token.progress === -1) {
+    return {
+      progress: 0,
+      laps,
+      trackIndexes: [START_INDEX[token.color]],
+    };
+  }
+
+  if (token.progress <= TRACK_END_PROGRESS) {
+    const rawDestination = token.progress + die;
+    const player = activePlayer(state);
+    const canEnterHome = !rulesFor(state).captureBeforeHome || player.hasCaptured;
+    const staysOnTrack = rawDestination <= TRACK_END_PROGRESS || !canEnterHome;
+    const trackStepCount = staysOnTrack
+      ? die
+      : Math.max(0, TRACK_END_PROGRESS - token.progress);
+    const trackIndexes = Array.from(
+      { length: trackStepCount },
+      (_, offset) => (START_INDEX[token.color] + token.progress + offset + 1) % 52,
+    );
+
+    if (rawDestination > TRACK_END_PROGRESS && !canEnterHome) {
+      return {
+        progress: rawDestination % 52,
+        laps: laps + Math.floor(rawDestination / 52),
+        trackIndexes,
+      };
+    }
+
+    return { progress: rawDestination, laps, trackIndexes };
+  }
+
+  const rawDestination = token.progress + die;
+  return {
+    progress: !rulesFor(state).exactRollToFinish && rawDestination > FINISH_PROGRESS
+      ? FINISH_PROGRESS
+      : rawDestination,
+    laps,
+    trackIndexes: [],
+  };
 }
 
 export function canMoveToken(state: GameState, token: Token, die: number): boolean {
@@ -100,29 +142,11 @@ export function canMoveToken(state: GameState, token: Token, die: number): boole
   if (token.color !== player.color || token.progress === FINISH_PROGRESS) return false;
   if (token.progress === -1 && rules.mustRollSixToEnter && die !== 6) return false;
 
-  const destination = destinationFor(state, token, die);
-  if (destination > FINISH_PROGRESS) return false;
-  if (
-    rules.captureBeforeHome
-    && !player.hasCaptured
-    && token.progress <= TRACK_END_PROGRESS
-    && destination >= HOME_START_PROGRESS
-  ) return false;
+  const plan = movementPlan(state, token, die);
+  if (plan.progress > FINISH_PROGRESS) return false;
 
   if (!rules.blockades) return true;
-
-  if (destination <= TRACK_END_PROGRESS) {
-    const destinationIndex = (START_INDEX[token.color] + destination) % 52;
-    if (isOpponentBlockade(state, destinationIndex, token.color)) return false;
-  }
-
-  const trackSteps = token.progress === -1
-    ? [START_INDEX[token.color]]
-    : Array.from(
-      { length: Math.max(0, Math.min(die, TRACK_END_PROGRESS - token.progress)) },
-      (_, offset) => (START_INDEX[token.color] + token.progress + offset + 1) % 52,
-    );
-  return !trackSteps.some((index) => isOpponentBlockade(state, index, token.color));
+  return !plan.trackIndexes.some((index) => isOpponentBlockade(state, index, token.color));
 }
 
 export function legalTokenIds(state: GameState, die = state.dieValue ?? state.pendingDice?.[0] ?? null): string[] {
@@ -136,6 +160,16 @@ export function legalDiceIndexes(state: GameState): number[] {
   return (state.pendingDice ?? []).flatMap((die, index) =>
     legalTokenIds(state, die).length > 0 ? [index] : [],
   );
+}
+
+export function legalMovesByToken(state: GameState): Record<string, number[]> {
+  const moves: Record<string, number[]> = {};
+  for (const die of state.pendingDice ?? []) {
+    for (const tokenId of legalTokenIds(state, die)) {
+      moves[tokenId] = [...(moves[tokenId] ?? []), die];
+    }
+  }
+  return moves;
 }
 
 export function createGame(
@@ -177,6 +211,7 @@ export function createGameForPlayers(
       color: player.color,
       index,
       progress: -1,
+      laps: 0,
     })),
   );
 
@@ -208,6 +243,13 @@ export function createGameForPlayers(
 function rollLabel(values: number[]) {
   if (values.length === 1) return `${values[0]}`;
   return `${values.slice(0, -1).join(", ")} and ${values.at(-1)}`;
+}
+
+function sixEarnsBonus(rules: GameRules, values: number[], usedDie = 6): boolean {
+  if (!rules.bonusRollOnSix || usedDie !== 6) return false;
+  return rules.dicePerTurn === 1
+    ? values.length === 1 && values[0] === 6
+    : values.length === rules.dicePerTurn && values.every((value) => value === 6);
 }
 
 export function rollDice(
@@ -248,7 +290,7 @@ export function rollDice(
   }
 
   if (!values.some((die) => legalTokenIds(rolled, die).length > 0)) {
-    if (rules.bonusRollOnSix && values.includes(6)) {
+    if (sixEarnsBonus(rules, values)) {
       return {
         ...rolled,
         phase: "awaiting_roll",
@@ -373,18 +415,18 @@ export function moveToken(state: GameState, tokenId: string, requestedDie?: numb
   const rules = rulesFor(state);
   const player = activePlayer(state);
   const movingToken = state.tokens.find((token) => token.id === tokenId)!;
-  const destination = destinationFor(state, movingToken, die);
-  const destinationIndex = destination <= TRACK_END_PROGRESS
-    ? (START_INDEX[movingToken.color] + destination) % 52
+  const plan = movementPlan(state, movingToken, die);
+  const destinationIndex = plan.progress <= TRACK_END_PROGRESS
+    ? (START_INDEX[movingToken.color] + plan.progress) % 52
     : null;
   const captured = destinationIndex !== null && (!rules.safeSquares || !SAFE_TRACK_INDEXES.has(destinationIndex))
     ? tokensAtTrackIndex(state, destinationIndex).filter((token) => token.color !== movingToken.color)
     : [];
-  const finished = destination === FINISH_PROGRESS;
+  const finished = plan.progress === FINISH_PROGRESS;
 
   const tokens = state.tokens.map((token) => {
-    if (token.id === tokenId) return { ...token, progress: destination };
-    if (captured.some((candidate) => candidate.id === token.id)) return { ...token, progress: -1 };
+    if (token.id === tokenId) return { ...token, progress: plan.progress, laps: plan.laps };
+    if (captured.some((candidate) => candidate.id === token.id)) return { ...token, progress: -1, laps: 0 };
     return token;
   });
   const players = captured.length > 0
@@ -394,7 +436,7 @@ export function moveToken(state: GameState, tokenId: string, requestedDie?: numb
     .filter((token) => token.color === player.color)
     .every((token) => token.progress === FINISH_PROGRESS);
   const earnedBonus = !hasWon && (
-    (die === 6 && rules.bonusRollOnSix)
+    sixEarnsBonus(rules, state.lastRolls?.length ? state.lastRolls : pendingDice, die)
     || (captured.length > 0 && rules.bonusRollOnCapture)
     || (finished && rules.bonusRollOnHome)
   );

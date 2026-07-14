@@ -5,12 +5,12 @@ export const DEFAULT_GAME_RULES: GameRules = {
   mustRollSixToEnter: true,
   threeEntryAttempts: false,
   bonusRollOnSix: true,
-  threeSixesLoseTurn: true,
+  threeSixesLoseTurn: false,
   bonusRollOnCapture: true,
   bonusRollOnHome: true,
   safeSquares: true,
   blockades: true,
-  captureBeforeHome: false,
+  captureBeforeHome: true,
   exactRollToFinish: true,
 };
 
@@ -120,7 +120,7 @@ export const RULE_GROUPS: Array<{
       {
         key: "captureBeforeHome",
         label: "Capture before entering home",
-        description: "A player's pieces wait outside the home lane until that player captures once.",
+        description: "Pieces keep circling the outer track until that player captures once.",
       },
     ],
   },

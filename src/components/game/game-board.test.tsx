@@ -12,10 +12,11 @@ describe("GameBoard", () => {
     const rolled = rollDie(game, 6);
 
     const html = renderToStaticMarkup(
-      <GameBoard state={rolled} legalIds={legalTokenIds(rolled)} onMove={() => undefined} />,
+      <GameBoard state={rolled} legalMoves={Object.fromEntries(legalTokenIds(rolled).map((id) => [id, [6]]))} onMove={() => undefined} />,
     );
 
     expect(html).toContain('class="token is-red is-legal"');
-    expect(html).toContain('aria-label="Red piece 4, legal move"');
+    expect(html).toContain('aria-label="Red piece 4, choose a die"');
+    expect(html).toContain('aria-haspopup="dialog"');
   });
 });

@@ -2,7 +2,7 @@
 
 import { RotateCcw, Sparkles, Trophy } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
-import { legalDiceIndexes, legalTokenIds, moveToken, rollDice, skipTurn } from "@/lib/game/engine";
+import { legalMovesByToken, moveToken, rollDice, skipTurn } from "@/lib/game/engine";
 import type { GameState, PlayerColor } from "@/lib/game/types";
 import { DiceControl } from "./dice-control";
 import { GameBoard } from "./game-board";
@@ -30,16 +30,13 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
   }));
   const [now, setNow] = useState(0);
   const [piecesMoving, setPiecesMoving] = useState(false);
-  const [selectedDieIndex, setSelectedDieIndex] = useState<number | null>(null);
   const [isRolling, startRolling] = useTransition();
   const state = timedState.game;
   const turnDeadline = timedState.turnDeadline;
-  const legalDieIndexes = legalDiceIndexes(state);
-  const effectiveDieIndex = selectedDieIndex !== null && legalDieIndexes.includes(selectedDieIndex)
-    ? selectedDieIndex
-    : (legalDieIndexes[0] ?? null);
-  const selectedDie = effectiveDieIndex === null ? null : state.pendingDice[effectiveDieIndex] ?? null;
-  const legalIds = useMemo(() => selectedDie ? legalTokenIds(state, selectedDie) : [], [selectedDie, state]);
+  const legalMoves = useMemo(
+    () => piecesMoving ? {} : legalMovesByToken(state),
+    [piecesMoving, state],
+  );
   const currentPlayer = state.players.find((player) => player.id === state.currentPlayerId)!;
   const winner = state.players.find((player) => player.id === state.winnerId);
   const remainingMs = winner ? 0 : turnDeadline ? turnDeadline - now : TURN_DURATION_MS;
@@ -91,18 +88,17 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
     });
   }
 
-  const handleMove = useCallback((id: string) => {
-    if (!selectedDie) return;
+  const handleMove = useCallback((id: string, die: number) => {
     setPiecesMoving(true);
     setTimedState((current) => {
-      const game = moveToken(current.game, id, selectedDie).state;
+      const game = moveToken(current.game, id, die).state;
       const batchFinished = game.currentPlayerId !== current.game.currentPlayerId || game.phase === "awaiting_roll";
       return {
         game,
         turnDeadline: batchFinished ? performance.now() + TURN_DURATION_MS : current.turnDeadline,
       };
     });
-  }, [selectedDie]);
+  }, []);
 
   return (
     <section className="game-table" aria-label="Local Ludo match">
@@ -119,19 +115,19 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
         <div className="board-column">
           <GameBoard
             state={state}
-            legalIds={legalIds}
+            legalMoves={legalMoves}
             activeColor={currentPlayer.color}
             interactionLocked={piecesMoving}
             onAnimationStateChange={setPiecesMoving}
             onMove={handleMove}
           />
           <div className="mobile-controls">
-            <TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} piecesMoving={piecesMoving} selectedDieIndex={effectiveDieIndex} onSelectDie={setSelectedDieIndex} remainingMs={remainingMs} onRoll={handleRoll} />
+            <TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} piecesMoving={piecesMoving} remainingMs={remainingMs} onRoll={handleRoll} />
             <RulesDisclosure rules={state.rules} />
           </div>
         </div>
         <aside className="game-panel">
-          <TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} piecesMoving={piecesMoving} selectedDieIndex={effectiveDieIndex} onSelectDie={setSelectedDieIndex} remainingMs={remainingMs} onRoll={handleRoll} />
+          <TurnControls state={state} currentPlayer={currentPlayer} winner={winner} isRolling={isRolling} piecesMoving={piecesMoving} remainingMs={remainingMs} onRoll={handleRoll} />
           <div className="players-list">
             <div className="panel-heading"><span>Players</span><small>{state.players.length}/4</small></div>
             {state.players.map((player) => {
@@ -159,14 +155,12 @@ export function LocalGame({ initialState }: { initialState: GameState }) {
   );
 }
 
-function TurnControls({ state, currentPlayer, winner, isRolling, piecesMoving, selectedDieIndex, onSelectDie, remainingMs, onRoll }: {
+function TurnControls({ state, currentPlayer, winner, isRolling, piecesMoving, remainingMs, onRoll }: {
   state: GameState;
   currentPlayer: GameState["players"][number];
   winner: GameState["players"][number] | undefined;
   isRolling: boolean;
   piecesMoving: boolean;
-  selectedDieIndex: number | null;
-  onSelectDie: (index: number) => void;
   remainingMs: number;
   onRoll: () => void;
 }) {
@@ -175,9 +169,9 @@ function TurnControls({ state, currentPlayer, winner, isRolling, piecesMoving, s
   }
   return (
     <div className={`turn-card ${colorClass[currentPlayer.color]}`}>
-      <div className="turn-copy"><span>{currentPlayer.name}&apos;s move</span><strong>{piecesMoving ? "Moving piece…" : state.phase === "awaiting_roll" ? `Roll ${state.rules.dicePerTurn === 1 ? "the die" : `${state.rules.dicePerTurn} dice`}` : state.pendingDice.length > 1 ? "Choose a die, then a piece" : "Choose a highlighted piece"}</strong></div>
+      <div className="turn-copy"><span>{currentPlayer.name}&apos;s move</span><strong>{piecesMoving ? "Moving piece…" : state.phase === "awaiting_roll" ? `Roll ${state.rules.dicePerTurn === 1 ? "the die" : `${state.rules.dicePerTurn} dice`}` : "Choose a piece, then a die"}</strong></div>
       <div className="turn-timer" aria-label={`Turn timer ${formatTimer(remainingMs)} remaining`}><span>{formatTimer(remainingMs)}</span><small>left</small></div>
-      <DiceControl game={state} selectedIndex={selectedDieIndex} disabled={piecesMoving} rolling={isRolling} onSelect={onSelectDie} onRoll={onRoll} />
+      <DiceControl game={state} disabled={piecesMoving} rolling={isRolling} onRoll={onRoll} />
     </div>
   );
 }

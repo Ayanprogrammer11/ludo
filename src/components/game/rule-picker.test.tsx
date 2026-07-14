@@ -29,18 +29,19 @@ describe("rule controls", () => {
     expect(html).not.toContain('role="switch"');
   });
 
-  it("renders every unspent die as a selectable move resource", () => {
+  it("renders every unspent die as read-only turn status", () => {
     const game = rollDice(createGame(["Ada", "Linus"], "dice-ui", {
       ...DEFAULT_GAME_RULES,
       dicePerTurn: 2,
     }), [6, 3]);
     const html = renderToStaticMarkup(
-      <DiceControl game={game} selectedIndex={0} disabled={false} rolling={false} onSelect={() => undefined} onRoll={() => undefined} />,
+      <DiceControl game={game} disabled={false} rolling={false} onRoll={() => undefined} />,
     );
 
-    expect(html).toContain("Choose die");
-    expect(html).toContain("Use die 1, showing 6");
-    expect(html).toContain("Use die 2, showing 3");
+    expect(html).toContain("Dice left · choose a piece");
+    expect(html).toContain("Die 1, showing 6");
+    expect(html).toContain("Die 2, showing 3");
+    expect(html).not.toContain("Use die");
   });
 
   it("keeps active rules discoverable during a match", () => {

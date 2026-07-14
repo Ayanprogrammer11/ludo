@@ -1,8 +1,9 @@
 "use client";
 
 import { Star } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { TOKEN_STEP_DURATION_MS, tokenAnimationFrames } from "@/lib/game/animation";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
+import { TOKEN_STEP_DURATION_MS, tokenAnimationFrames, tokenForwardDistance } from "@/lib/game/animation";
 import {
   HOME_LANES,
   SAFE_TRACK_INDEXES,
@@ -12,6 +13,7 @@ import {
   tokenCoordinate,
 } from "@/lib/game/board";
 import type { GameState, PlayerColor, Token } from "@/lib/game/types";
+import { Die } from "./die";
 
 const colorClass: Record<PlayerColor, string> = {
   red: "is-red",
@@ -28,8 +30,8 @@ const laneByCoordinate = new Map(
 
 type BoardProps = {
   state: GameState;
-  legalIds: string[];
-  onMove: (id: string) => void;
+  legalMoves: Record<string, number[]>;
+  onMove: (id: string, die: number) => void;
   activeColor?: PlayerColor | null;
   interactionLocked?: boolean;
   onAnimationStateChange?: (animating: boolean) => void;
@@ -94,9 +96,10 @@ function useAnimatedTokens(tokens: Token[], onAnimationStateChange?: (animating:
         const frames = tokenAnimationFrames(current, target);
         if (frames.length === 0) continue;
 
-        const currentById = new Map(current.map((token) => [token.id, token.progress]));
+        const currentById = new Map(current.map((token) => [token.id, token]));
         const advancing = target.filter((token) => {
-          const distance = token.progress - (currentById.get(token.id) ?? token.progress);
+          const previous = currentById.get(token.id);
+          const distance = previous ? tokenForwardDistance(previous, token) : 0;
           return distance >= 1 && distance <= 6;
         });
         const isMove = advancing.length === 1;
@@ -111,7 +114,7 @@ function useAnimatedTokens(tokens: Token[], onAnimationStateChange?: (animating:
 
         const moverId = advancing[0].id;
         const capturedIds = new Set(target
-          .filter((token) => token.progress < (currentById.get(token.id) ?? token.progress))
+          .filter((token) => token.progress === -1 && currentById.get(token.id)?.progress !== -1)
           .map((token) => token.id));
         setAnimating(true);
         setMovingTokenId(moverId);
@@ -150,13 +153,14 @@ function tokenPlacement(index: number, count: number) {
   };
 }
 
-function TokenPiece({ token, legal, moving, returning, placement, onMove }: {
+function TokenPiece({ token, legal, expanded, moving, returning, placement, onSelect }: {
   token: Token;
   legal: boolean;
+  expanded: boolean;
   moving: boolean;
   returning: boolean;
   placement: ReturnType<typeof tokenPlacement>;
-  onMove: (id: string) => void;
+  onSelect: (id: string, anchor: HTMLButtonElement) => void;
 }) {
   const [row, column] = tokenCoordinate(token);
   const style: TokenPositionStyle = {
@@ -179,8 +183,10 @@ function TokenPiece({ token, legal, moving, returning, placement, onMove }: {
         type="button"
         className={`token ${colorClass[token.color]} ${legal ? "is-legal" : ""}`}
         disabled={!legal}
-        onClick={() => onMove(token.id)}
-        aria-label={`${labelColor} piece ${token.index + 1}${legal ? ", legal move" : ""}`}
+        onClick={(event) => onSelect(token.id, event.currentTarget)}
+        aria-label={`${labelColor} piece ${token.index + 1}${legal ? ", choose a die" : ""}`}
+        aria-haspopup={legal ? "dialog" : undefined}
+        aria-expanded={legal ? expanded : undefined}
       >
         <span />
       </button>
@@ -228,13 +234,77 @@ const BoardSurface = memo(function BoardSurface({ activeColor }: { activeColor?:
   );
 });
 
-function sameIds(left: string[], right: string[]) {
-  return left.length === right.length && left.every((id, index) => id === right[index]);
+function sameMoves(left: Record<string, number[]>, right: Record<string, number[]>) {
+  const leftEntries = Object.entries(left);
+  const rightEntries = Object.entries(right);
+  return leftEntries.length === rightEntries.length && leftEntries.every(([id, dice]) => {
+    const candidate = right[id];
+    return candidate?.length === dice.length && candidate.every((die, index) => die === dice[index]);
+  });
+}
+
+function PieceDicePopover({ token, dice, anchor, onChoose, onClose }: {
+  token: Token;
+  dice: number[];
+  anchor: HTMLButtonElement;
+  onChoose: (die: number) => void;
+  onClose: () => void;
+}) {
+  const firstButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    firstButton.current?.focus();
+  }, []);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  const rect = anchor.getBoundingClientRect();
+  const placeBelow = rect.top < 120;
+  const left = Math.max(76, Math.min(window.innerWidth - 76, rect.left + rect.width / 2));
+  const top = placeBelow ? rect.bottom + 10 : rect.top - 10;
+  const counts = new Map<number, number>();
+  dice.forEach((die) => counts.set(die, (counts.get(die) ?? 0) + 1));
+  const colorName = token.color.charAt(0).toUpperCase() + token.color.slice(1);
+
+  return createPortal(
+    <div className="piece-dice-layer" onPointerDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <div
+        className={`piece-dice-popover ${placeBelow ? "is-below" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Choose a die for ${colorName} piece ${token.index + 1}`}
+        style={{ left, top }}
+      >
+        <strong>Choose a roll</strong>
+        <div>
+          {[...counts].map(([die, count], index) => (
+            <button
+              key={die}
+              ref={index === 0 ? firstButton : undefined}
+              type="button"
+              onClick={() => onChoose(die)}
+              aria-label={`Move ${die} spaces${count > 1 ? `, ${count} dice available` : ""}`}
+            >
+              <Die value={die} compact />
+              <span>{die}{count > 1 ? ` ×${count}` : ""}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
 }
 
 export const GameBoard = memo(function GameBoard({
   state,
-  legalIds,
+  legalMoves,
   onMove,
   activeColor,
   interactionLocked = false,
@@ -244,10 +314,27 @@ export const GameBoard = memo(function GameBoard({
     state.tokens,
     onAnimationStateChange,
   );
-  const legalSet = useMemo(
-    () => new Set(interactionLocked || animating ? [] : legalIds),
-    [animating, interactionLocked, legalIds],
+  const [selection, setSelection] = useState<{ tokenId: string; anchor: HTMLButtonElement } | null>(null);
+  const availableMoves = useMemo(
+    () => interactionLocked || animating ? {} : legalMoves,
+    [animating, interactionLocked, legalMoves],
   );
+  const legalSet = useMemo(() => new Set(Object.keys(availableMoves)), [availableMoves]);
+  const selectedToken = selection
+    ? displayed.find((token) => token.id === selection.tokenId)
+    : undefined;
+  const selectedDice = selection ? availableMoves[selection.tokenId] ?? [] : [];
+  const closePopover = useCallback(() => {
+    const anchor = selection?.anchor;
+    setSelection(null);
+    anchor?.focus();
+  }, [selection]);
+  const chooseDie = useCallback((die: number) => {
+    if (!selection) return;
+    const tokenId = selection.tokenId;
+    setSelection(null);
+    onMove(tokenId, die);
+  }, [onMove, selection]);
   const grouped = new Map<string, Token[]>();
   for (const token of displayed) {
     const key = coordinateKey(tokenCoordinate(token));
@@ -261,7 +348,7 @@ export const GameBoard = memo(function GameBoard({
   const guidance = animating
     ? "Moving piece step by step"
     : state.phase === "awaiting_move"
-      ? `${legalIds.length} ${legalIds.length === 1 ? "piece can" : "pieces can"} move — choose a highlighted piece`
+      ? `${legalSet.size} ${legalSet.size === 1 ? "piece can" : "pieces can"} move — choose a piece, then its die`
       : state.phase === "finished"
         ? "Match complete"
         : "Roll the die to begin your move";
@@ -276,15 +363,25 @@ export const GameBoard = memo(function GameBoard({
               key={token.id}
               token={token}
               legal={legalSet.has(token.id)}
+              expanded={selection?.tokenId === token.id && selectedDice.length > 0}
               moving={movingTokenId === token.id}
               returning={returningIds.has(token.id)}
               placement={placements.get(token.id)!}
-              onMove={onMove}
+              onSelect={(tokenId, anchor) => setSelection({ tokenId, anchor })}
             />
           ))}
         </div>
       </div>
       <p className="board-guidance" aria-live="polite">{guidance}</p>
+      {selection && selectedToken && selectedDice.length > 0 ? (
+        <PieceDicePopover
+          token={selectedToken}
+          dice={selectedDice}
+          anchor={selection.anchor}
+          onChoose={chooseDie}
+          onClose={closePopover}
+        />
+      ) : null}
     </div>
   );
 }, (previous, next) => (
@@ -292,5 +389,5 @@ export const GameBoard = memo(function GameBoard({
   && previous.activeColor === next.activeColor
   && previous.interactionLocked === next.interactionLocked
   && previous.onMove === next.onMove
-  && sameIds(previous.legalIds, next.legalIds)
+  && sameMoves(previous.legalMoves, next.legalMoves)
 ));

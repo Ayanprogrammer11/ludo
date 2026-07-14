@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createGame, forfeitPlayer, legalTokenIds, moveToken, rollDice, rollDie } from "./engine";
+import { createGame, forfeitPlayer, legalMovesByToken, legalTokenIds, moveToken, rollDice, rollDie } from "./engine";
 import { DEFAULT_GAME_RULES } from "./rules";
 
 describe("Ludo rules engine", () => {
@@ -43,7 +43,10 @@ describe("Ludo rules engine", () => {
   });
 
   it("forfeits the turn after three consecutive sixes", () => {
-    let game = createGame(["Ada", "Linus"]);
+    let game = createGame(["Ada", "Linus"], "three-six-penalty", {
+      ...DEFAULT_GAME_RULES,
+      threeSixesLoseTurn: true,
+    });
     game = moveToken(rollDie(game, 6), "red-0").state;
     game = moveToken(rollDie(game, 6), "red-0").state;
     game = rollDie(game, 6);
@@ -93,6 +96,7 @@ describe("Ludo rules engine", () => {
     const game = createGame(["Ada", "Linus", "Grace", "Ken"]);
 
     for (const player of game.players) {
+      player.hasCaptured = true;
       const token = game.tokens.find((candidate) => candidate.color === player.color)!;
       token.progress = 50;
       game.currentPlayerId = player.id;
@@ -108,6 +112,7 @@ describe("Ludo rules engine", () => {
     let game = createGame(["Ada", "Linus", "Grace", "Ken"]);
 
     for (const player of game.players) {
+      player.hasCaptured = true;
       const tokenId = `${player.color}-0`;
       game.tokens.find((token) => token.id === tokenId)!.progress = 0;
 
@@ -250,23 +255,56 @@ describe("Ludo rules engine", () => {
     expect(legalTokenIds(rollDie(game, 6))).toContain("red-0");
   });
 
-  it("can require a capture before entering the home lane", () => {
+  it("keeps a capture-gated piece circling instead of trapping it at home entry", () => {
     let game = createGame(["Ada", "Linus"], "capture-gate", {
       ...DEFAULT_GAME_RULES,
       captureBeforeHome: true,
     });
     game.tokens.find((token) => token.id === "red-0")!.progress = 51;
-    expect(legalTokenIds(rollDie(game, 1))).not.toContain("red-0");
+    let rolled = rollDie(game, 1);
+    expect(legalTokenIds(rolled)).toContain("red-0");
+    game = moveToken(rolled, "red-0").state;
+    expect(game.tokens.find((token) => token.id === "red-0")).toMatchObject({ progress: 0, laps: 1 });
 
+    game.currentPlayerId = "player-1";
     game.phase = "awaiting_roll";
     game.dieValue = null;
     game.pendingDice = [];
     game.tokens.find((token) => token.id === "red-0")!.progress = 13;
     game.tokens.find((token) => token.id === "green-0")!.progress = 1;
     game = moveToken(rollDie(game, 1), "red-0").state;
-    game.tokens.find((token) => token.id === "red-0")!.progress = 51;
+    const red = game.tokens.find((token) => token.id === "red-0")!;
+    red.progress = 51;
+    red.laps = 1;
+    game.currentPlayerId = "player-1";
+    game.phase = "awaiting_roll";
     expect(game.players.find((player) => player.id === "player-1")?.hasCaptured).toBe(true);
-    expect(legalTokenIds(rollDie(game, 1))).toContain("red-0");
+    rolled = rollDie(game, 1);
+    expect(moveToken(rolled, "red-0").state.tokens.find((token) => token.id === "red-0"))
+      .toMatchObject({ progress: 52, laps: 1 });
+  });
+
+  it("wraps every color onto another outer lap while capture-gated", () => {
+    for (const color of ["red", "green", "yellow", "blue"] as const) {
+      const game = createGame(["Ada", "Linus", "Grace", "Ken"]);
+      const player = game.players.find((candidate) => candidate.color === color)!;
+      const token = game.tokens.find((candidate) => candidate.color === color)!;
+      game.currentPlayerId = player.id;
+      token.progress = 50;
+
+      const moved = moveToken(rollDie(game, 4), token.id).state;
+      expect(moved.tokens.find((candidate) => candidate.id === token.id))
+        .toMatchObject({ progress: 2, laps: 1 });
+    }
+  });
+
+  it("checks blockades across the capture-gated lap boundary", () => {
+    const game = createGame(["Ada", "Linus"]);
+    game.tokens.find((token) => token.id === "red-0")!.progress = 50;
+    game.tokens.find((token) => token.id === "green-0")!.progress = 39;
+    game.tokens.find((token) => token.id === "green-1")!.progress = 39;
+
+    expect(legalTokenIds(rollDie(game, 4))).not.toContain("red-0");
   });
 
   it("can accept an over-roll at the finish", () => {
@@ -279,7 +317,7 @@ describe("Ludo rules engine", () => {
     expect(moveToken(rollDie(game, 5), "red-0").state.tokens.find((token) => token.id === "red-0")?.progress).toBe(57);
   });
 
-  it("spends multiple dice in any order and queues the bonus until the tray is empty", () => {
+  it("does not grant a six bonus from a mixed multi-dice tray", () => {
     let game = createGame(["Ada", "Linus"], "two-dice", {
       ...DEFAULT_GAME_RULES,
       dicePerTurn: 2,
@@ -294,8 +332,34 @@ describe("Ludo rules engine", () => {
     expect(legalTokenIds(game, 3)).toContain("red-0");
     game = moveToken(game, "red-0", 3).state;
     expect(game.tokens.find((token) => token.id === "red-0")?.progress).toBe(3);
+    expect(game.currentPlayerId).toBe("player-2");
+    expect(game.phase).toBe("awaiting_roll");
+  });
+
+  it("grants a bonus when every die in a multi-dice tray is six", () => {
+    let game = createGame(["Ada", "Linus"], "all-sixes", {
+      ...DEFAULT_GAME_RULES,
+      dicePerTurn: 3,
+    });
+    game = rollDice(game, [6, 6, 6]);
+    game = moveToken(game, "red-0", 6).state;
+    game = moveToken(game, "red-1", 6).state;
+    game = moveToken(game, "red-2", 6).state;
+
     expect(game.currentPlayerId).toBe("player-1");
     expect(game.phase).toBe("awaiting_roll");
+  });
+
+  it("groups every legal die under the piece that can use it", () => {
+    const game = createGame(["Ada", "Linus"], "piece-first", {
+      ...DEFAULT_GAME_RULES,
+      dicePerTurn: 3,
+    });
+    game.tokens.find((token) => token.id === "red-0")!.progress = 0;
+    const rolled = rollDice(game, [2, 6, 2]);
+
+    expect(legalMovesByToken(rolled)["red-0"]).toEqual([2, 6, 2]);
+    expect(legalMovesByToken(rolled)["red-1"]).toEqual([6]);
   });
 
   it("supports four dice and rejects the wrong tray size", () => {
@@ -330,10 +394,21 @@ describe("Ludo rules engine", () => {
     const game = createGame(["Ada", "Linus"], "triple-six", {
       ...DEFAULT_GAME_RULES,
       dicePerTurn: 3,
+      threeSixesLoseTurn: true,
     });
     const rolled = rollDice(game, [6, 6, 6]);
 
     expect(rolled.currentPlayerId).toBe("player-2");
     expect(rolled.pendingDice).toEqual([]);
+  });
+
+  it("uses the requested house-rule defaults", () => {
+    expect(DEFAULT_GAME_RULES).toMatchObject({
+      threeSixesLoseTurn: false,
+      captureBeforeHome: true,
+      blockades: true,
+      bonusRollOnCapture: true,
+      bonusRollOnHome: true,
+    });
   });
 });

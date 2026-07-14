@@ -29,6 +29,21 @@ describe("token animation frames", () => {
     expect(frames[1].find((token) => token.id === "green-0")!.progress).toBe(-1);
   });
 
+  it("animates a capture-gated piece across the outer-lap boundary", () => {
+    const game = createGame(["Ada", "Linus"]);
+    const mover = game.tokens.find((token) => token.id === "red-0")!;
+    mover.progress = 50;
+    const target = structuredClone(game.tokens);
+    const targetMover = target.find((token) => token.id === "red-0")!;
+    targetMover.progress = 2;
+    targetMover.laps = 1;
+
+    expect(tokenAnimationFrames(game.tokens, target).map((frame) => {
+      const token = frame.find((candidate) => candidate.id === "red-0")!;
+      return [token.progress, token.laps];
+    })).toEqual([[51, 0], [0, 1], [1, 1], [2, 1]]);
+  });
+
   it("synchronizes reconnect jumps immediately", () => {
     const game = createGame(["Ada", "Linus"]);
     const target = structuredClone(game.tokens);

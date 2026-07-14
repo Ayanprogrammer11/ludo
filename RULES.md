@@ -33,14 +33,18 @@ on rules that remain understandable as independent table options.
 | Dice per turn | Roll 1–4 dice together. Spend every usable die in any order, on the same or different pieces. A bonus roll is queued until the tray is resolved. |
 | Need a 6 to enter | A yard piece can only reach its starting square with a 6. When off, any die can enter a piece and that entire die is consumed. |
 | Three entry attempts | When every unfinished piece is in the yard, the player gets up to three tray rolls to find a 6. |
-| Extra roll after a 6 | Using a 6 queues another complete tray after the remaining dice are spent. |
+| Extra roll after a 6 | With one die, using a 6 queues another roll. With 2–4 dice, a bonus tray is queued only when every die in the original tray rolled 6. |
 | Third 6 ends the turn | The third consecutive 6 cannot be used; all unspent dice are discarded and play passes. With multiple dice, left-to-right tray order determines consecutiveness. |
 | Extra roll after a capture | A capture queues another complete tray. |
 | Extra roll after reaching home | Finishing one piece queues another complete tray. |
 | Protected safe squares | Opponents on stars and coloured starting squares cannot be captured. |
 | Blockades | Two same-colour pieces prevent opponents from landing on or passing their square. |
-| Capture before home | None of a player's pieces may enter the home lane until that player has captured at least once. |
+| Capture before home | None of a player's pieces may enter the home lane until that player has captured at least once. A gated piece keeps circling the outer track and may enter home on a later lap after a capture. |
 | Exact roll to finish | An oversized die cannot move that piece. When off, an oversized die finishes it. |
 
 Rules are locked when the host starts the match, copied into authoritative game
 state, included in replay frames, and visible to every player during play.
+
+The default table requires a capture before home, enforces blockades, rewards
+captures and completed pieces with another turn, and does not discard three
+consecutive sixes.

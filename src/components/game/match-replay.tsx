@@ -70,7 +70,7 @@ export function MatchReplay({ match }: { match: StoredMatch }) {
             <span>+{formatDuration(deltaMs)}</span>
           </div>
         </div>
-        <GameBoard state={frame.state} legalIds={[]} activeColor={current?.color ?? null} onMove={() => undefined} />
+        <GameBoard state={frame.state} legalMoves={{}} activeColor={current?.color ?? null} onMove={() => undefined} />
       </div>
 
       <aside className="replay-panel">

@@ -32,6 +32,8 @@ export type Token = {
   color: PlayerColor;
   index: number;
   progress: number;
+  /** Completed outer-board laps before entering the home lane. */
+  laps: number;
 };
 
 export type GameEvent = {
